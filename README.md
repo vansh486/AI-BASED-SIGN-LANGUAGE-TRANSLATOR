@@ -1,4 +1,4 @@
-                                            AI-Based Sign Language Translator (PT442)
+                                           #  AI-Based Sign Language Translator (PT442)
 
 An AI-powered, real-time, bidirectional sign language translation project developed as a Major Project at IILM University, Greater Noida.
 
