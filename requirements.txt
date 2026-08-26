@@ -1,0 +1,19 @@
+# --- Video & Image Processing ---
+opencv-python
+numpy
+pandas
+
+# --- Pose Estimation & Landmarks ---
+mediapipe==0.10.21
+
+# --- Deep Learning & AI ---
+torch
+torchvision
+
+# --- Backend API ---
+fastapi
+uvicorn
+
+# --- Notebooks for Experimentation ---
+jupyter
+matplotlib

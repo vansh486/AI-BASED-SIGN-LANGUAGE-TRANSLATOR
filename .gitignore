@@ -1,0 +1,18 @@
+# Python environment
+__pycache__/
+.venv/
+venv/
+*.pyc
+
+# Data (Never upload heavy datasets to Git)
+data/raw/
+data/processed/
+data/landmarks/
+
+# Saved AI Models (These files are too big)
+models/*.pth
+models/*.pt
+models/*.h5
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
