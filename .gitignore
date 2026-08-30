@@ -5,9 +5,9 @@ venv/
 *.pyc
 
 # Data (Never upload heavy datasets to Git)
-data/raw/
-data/processed/
-data/landmarks/
+data/raw_isl/
+data/raw_videos/
+data/metadata/
 
 # Saved AI Models (These files are too big)
 models/*.pth
