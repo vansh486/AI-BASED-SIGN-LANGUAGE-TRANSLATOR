@@ -1,55 +1,69 @@
-import os
+"""Convert raw sign videos into validated MediaPipe landmark sequences."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import cv2
 import numpy as np
-from landmarks import LandmarkExtractor
 
-def preprocess_videos():
-    input_dir = "data/raw_videos"
-    output_dir = "data/processed"
-    
-    if not os.path.exists(input_dir):
-        print(f"Directory {input_dir} does not exist. Record videos first.")
-        return
+from src.data.landmarks import LandmarkExtractor
 
+
+def preprocess_videos(input_dir: str | Path, output_dir: str | Path, overwrite: bool = False) -> int:
+    input_path = Path(input_dir)
+    output_path = Path(output_dir)
+    if not input_path.is_dir():
+        raise FileNotFoundError(f"Raw video directory does not exist: {input_path.resolve()}")
+
+    processed_count = 0
     extractor = LandmarkExtractor()
-    
-    for class_name in os.listdir(input_dir):
-        class_in_path = os.path.join(input_dir, class_name)
-        if not os.path.isdir(class_in_path):
-            continue
-            
-        class_out_path = os.path.join(output_dir, class_name)
-        os.makedirs(class_out_path, exist_ok=True)
-        
-        for video_file in os.listdir(class_in_path):
-            if not video_file.endswith(".mp4"):
-                continue
-                
-            video_path = os.path.join(class_in_path, video_file)
-            cap = cv2.VideoCapture(video_path)
-            frames_data = []
-            
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Convert BGR to RGB for MediaPipe processing
-                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = extractor.holistic.process(image)
-                
-                # Extract the 258 landmark values for the frame
-                keypoints = extractor.extract_keypoints(results)
-                frames_data.append(keypoints)
-                
-            cap.release()
-            
-            if len(frames_data) > 0:
-                tensor_array = np.array(frames_data, dtype=np.float32)
-                out_name = f"{os.path.splitext(video_file)[0]}.npy"
-                out_file_path = os.path.join(class_out_path, out_name)
-                np.save(out_file_path, tensor_array)
-                print(f"Processed: {class_name}/{video_file} -> Saved shape {tensor_array.shape}")
+    try:
+        for class_dir in sorted(path for path in input_path.iterdir() if path.is_dir()):
+            class_output = output_path / class_dir.name
+            class_output.mkdir(parents=True, exist_ok=True)
+
+            for video_path in sorted(class_dir.glob("*.mp4")):
+                output_file = class_output / f"{video_path.stem}.npy"
+                if output_file.exists() and not overwrite:
+                    print(f"Skipping existing file: {output_file}")
+                    continue
+
+                capture = cv2.VideoCapture(str(video_path))
+                if not capture.isOpened():
+                    raise RuntimeError(f"Cannot open video: {video_path}")
+                frames: list[np.ndarray] = []
+                try:
+                    while True:
+                        ok, frame = capture.read()
+                        if not ok:
+                            break
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frames.append(extractor.extract_keypoints(extractor.holistic.process(rgb_frame)))
+                finally:
+                    capture.release()
+
+                if not frames:
+                    raise ValueError(f"No readable frames found in {video_path}")
+                sequence = np.asarray(frames, dtype=np.float32)
+                np.save(output_file, sequence, allow_pickle=False)
+                processed_count += 1
+                print(f"Processed {video_path} -> {output_file} {tuple(sequence.shape)}")
+    finally:
+        extractor.close()
+    return processed_count
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Extract MediaPipe landmarks from raw sign videos.")
+    parser.add_argument("--input-dir", default="data/raw_videos")
+    parser.add_argument("--output-dir", default="data/processed")
+    parser.add_argument("--overwrite", action="store_true")
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
-    preprocess_videos()
+    arguments = parse_args()
+    count = preprocess_videos(arguments.input_dir, arguments.output_dir, arguments.overwrite)
+    print(f"Processed {count} video(s).")

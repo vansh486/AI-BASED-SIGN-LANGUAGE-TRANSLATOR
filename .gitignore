@@ -13,6 +13,7 @@ data/metadata/
 models/*.pth
 models/*.pt
 models/*.h5
+models/*.metrics.json
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
