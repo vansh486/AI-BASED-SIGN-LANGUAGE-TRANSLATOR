@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -124,6 +125,33 @@ class ISLSequenceDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             class_name: sum(record.class_name == class_name for record in self.samples)
             for class_name in self.class_names
         }
+
+
+class FeatureTransformDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
+    """Apply a feature transform to one split without touching validation or test data."""
+
+    def __init__(
+        self,
+        dataset: Dataset[tuple[torch.Tensor, torch.Tensor]],
+        transform: Callable[[torch.Tensor], torch.Tensor],
+    ) -> None:
+        self.dataset = dataset
+        self.transform = transform
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
+        features, label = self.dataset[index]
+        transformed = self.transform(features)
+        if transformed.shape != features.shape:
+            raise ValueError(
+                f"Feature transform changed sequence shape from {tuple(features.shape)} "
+                f"to {tuple(transformed.shape)}."
+            )
+        if not torch.isfinite(transformed).all():
+            raise ValueError("Feature transform produced NaN or infinite values.")
+        return transformed, label
 
 
 def make_stratified_splits(

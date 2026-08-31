@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import random
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +12,18 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader, Dataset
 
-from src.data.loader import DEFAULT_SEQUENCE_LENGTH, FEATURE_DIM, ISLSequenceDataset, make_stratified_splits
+from src.data.augment import LandmarkAugmentationConfig, LandmarkAugmenter
+from src.data.loader import (
+    DEFAULT_SEQUENCE_LENGTH,
+    FEATURE_DIM,
+    FeatureTransformDataset,
+    ISLSequenceDataset,
+    make_stratified_splits,
+)
 from src.models.hybrid import IsolatedSignClassifier
 from src.training.evaluate import evaluate_model
 from src.utils.checkpoints import CHECKPOINT_SCHEMA_VERSION, atomic_torch_save, load_checkpoint
+from src.utils.io import atomic_json_save
 
 
 def set_global_seed(seed: int) -> None:
@@ -40,23 +45,6 @@ def resolve_device(requested: str) -> torch.device:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available.")
     return device
-
-
-def atomic_json_save(payload: dict[str, Any], destination: str | Path) -> None:
-    path = Path(destination)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", suffix=".tmp", prefix=f".{path.name}.", dir=path.parent, delete=False
-        ) as temporary_file:
-            temporary_path = temporary_file.name
-            json.dump(payload, temporary_file, indent=2, sort_keys=True)
-            temporary_file.write("\n")
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path and os.path.exists(temporary_path):
-            os.unlink(temporary_path)
 
 
 def make_dataloader(
@@ -118,6 +106,17 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     if args.patience <= 0 or args.min_delta < 0 or args.num_workers < 0:
         raise ValueError("patience must be positive; min_delta and num_workers cannot be negative.")
 
+    augmentation_config = LandmarkAugmentationConfig(
+        probability=0.0 if args.disable_augmentation else args.augmentation_probability,
+        rotation_degrees=args.rotation_degrees,
+        scale_min=args.scale_min,
+        scale_max=args.scale_max,
+        noise_std=args.noise_std,
+        frame_drop_probability=args.frame_drop_probability,
+        temporal_rate_min=args.temporal_rate_min,
+        temporal_rate_max=args.temporal_rate_max,
+    )
+
     set_global_seed(args.seed)
     device = resolve_device(args.device)
     dataset = ISLSequenceDataset(args.data_dir, sequence_length=args.sequence_length)
@@ -131,7 +130,10 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     if len(dataset.class_names) < 2:
         raise ValueError("At least two class directories are required for training.")
 
-    train_loader = make_dataloader(train_set, args.batch_size, True, args.num_workers, device)
+    augmented_train_set = FeatureTransformDataset(
+        train_set, LandmarkAugmenter(augmentation_config, seed=args.seed)
+    )
+    train_loader = make_dataloader(augmented_train_set, args.batch_size, True, args.num_workers, device)
     validation_loader = make_dataloader(validation_set, args.batch_size, False, args.num_workers, device)
     test_loader = make_dataloader(test_set, args.batch_size, False, args.num_workers, device)
 
@@ -157,6 +159,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
         f"train={len(train_set)}, validation={len(validation_set)}, test={len(test_set)}"
     )
     print(f"Class distribution: {dataset.summary()}")
+    print(f"Training augmentation: {augmentation_config.to_dict()}")
 
     best_validation_loss = float("inf")
     best_epoch = 0
@@ -198,6 +201,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
                     "class_names": dataset.class_names,
                     "sequence_length": args.sequence_length,
                     "feature_dim": FEATURE_DIM,
+                    "augmentation": augmentation_config.to_dict(),
                     "training": {
                         "seed": args.seed,
                         "best_epoch": best_epoch,
@@ -263,6 +267,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-delta", type=float, default=1e-4)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or a torch device string")
+    parser.add_argument("--disable-augmentation", action="store_true")
+    parser.add_argument("--augmentation-probability", type=float, default=0.9)
+    parser.add_argument("--rotation-degrees", type=float, default=8.0)
+    parser.add_argument("--scale-min", type=float, default=0.92)
+    parser.add_argument("--scale-max", type=float, default=1.08)
+    parser.add_argument("--noise-std", type=float, default=0.003)
+    parser.add_argument("--frame-drop-probability", type=float, default=0.08)
+    parser.add_argument("--temporal-rate-min", type=float, default=0.85)
+    parser.add_argument("--temporal-rate-max", type=float, default=1.15)
     return parser.parse_args()
 
 
