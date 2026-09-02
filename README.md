@@ -1,6 +1,6 @@
 # AI-Based Sign Language Translator
 
-This repository implements a reproducible Phase 0 isolated-sign baseline and the Phase 1 data-collection and landmark-augmentation tooling. It accepts a short clip, extracts 258 MediaPipe pose-and-hand features per frame, and predicts one sign class.
+This repository currently is in developing phase currently it is using isolated-sign baseline and this project is divided into phases in which the Phase 1 data-collection and landmark-augmentation tooling. It accepts a short clip, extracts 258 MediaPipe pose-and-hand features per frame, and predicts one sign class is done .
 
 It is not yet a continuous sign translator. It does not use CTC, a real ST-GCN, gloss-to-English translation, an API, or a client application. Those are later phases and must be evaluated separately.
 
@@ -109,6 +109,7 @@ Keep the test set untouched until model choices are final. With videos captured 
 ## Next phases
 
 1. Expand and augment landmark data only after the Phase 0 metrics are trustworthy.
-2. Train a real graph model or improve the isolated-sign model if the augmented baseline is insufficient.
+2. Train a real graph model and improve the isolated-sign model if the augmented baseline is insufficient.
 3. Move to continuous signing only after collecting continuous sequences with time-aligned gloss labels; then CTC becomes appropriate.
 4. Add gloss-to-text, FastAPI, a client, profiling, ONNX export, and deployment after the recognition contract is stable.
+5. Add more data samples to testing and developing and also add some already made dataset like include-50, and if system supported we will also have a plan to implement ISL translate dataset in this project.
