@@ -113,3 +113,4 @@ Keep the test set untouched until model choices are final. With videos captured 
 3. Move to continuous signing only after collecting continuous sequences with time-aligned gloss labels; then CTC becomes appropriate.
 4. Add gloss-to-text, FastAPI, a client, profiling, ONNX export, and deployment after the recognition contract is stable.
 5. Add more data samples to testing and developing and also add some already made dataset like include-50, and if system supported we will also have a plan to implement ISL translate dataset in this project.
+6. In upcoming phases we are going to use react based system for testing and for deployment we are going to use flutter application for users.
