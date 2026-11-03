@@ -31,7 +31,6 @@ class CaptureConditions:
     clothing: str
     speed: str
     camera_angle: str
-    camera_model: str /N
 
 
 def next_sample_index(class_dir: Path, class_name: str) -> int:

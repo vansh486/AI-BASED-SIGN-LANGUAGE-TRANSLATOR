@@ -1,18 +1,19 @@
-"""Webcam inference for a Phase 0 isolated-sign classifier checkpoint."""
+"""Webcam inference for an isolated-sign classifier checkpoint."""
 
 from __future__ import annotations
 
 import argparse
 from collections import deque
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
 import torch
+from torch import nn
 
 from src.data.landmarks import LandmarkExtractor
-from src.models.hybrid import IsolatedSignClassifier
+from src.models.hybrid import build_classifier
 from src.training.train import resolve_device
 from src.utils.checkpoints import load_checkpoint
 
@@ -33,9 +34,11 @@ class ProbabilitySmoother:
         return np.mean(np.stack(self._probabilities), axis=0)
 
 
-def load_model(checkpoint_path: str | Path, device: torch.device) -> tuple[IsolatedSignClassifier, dict]:
+def load_model(
+    checkpoint_path: str | Path, device: torch.device
+) -> tuple[nn.Module, dict[str, Any]]:
     checkpoint = load_checkpoint(checkpoint_path, device)
-    model = IsolatedSignClassifier(**checkpoint["model_config"])
+    model = build_classifier(checkpoint["model_type"], checkpoint["model_config"])
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
@@ -128,7 +131,7 @@ def run_realtime_inference(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run webcam inference for an isolated-sign model.")
-    parser.add_argument("--checkpoint", default="models/isolated_sign_classifier.pt")
+    parser.add_argument("--checkpoint", default="models/stgcn_transformer.pt")
     parser.add_argument("--camera-index", type=int, default=0)
     parser.add_argument("--threshold", type=float, default=0.75)
     parser.add_argument("--smoothing-window", type=int, default=5)

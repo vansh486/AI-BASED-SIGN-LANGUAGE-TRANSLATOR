@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import numpy as np
@@ -211,6 +212,169 @@ def make_stratified_splits(
         Subset(dataset, train_indices),
         Subset(dataset, validation_indices),
         Subset(dataset, test_indices),
+    )
+
+
+def load_sample_groups(
+    dataset: ISLSequenceDataset,
+    group_by: str,
+    manifest_path: str | Path = "data/metadata/processed_manifest.json",
+) -> list[str]:
+    """Load one signer or session group ID for each dataset sample."""
+
+    if group_by not in {"session", "signer"}:
+        raise ValueError("group_by must be 'session' or 'signer'.")
+    path = Path(manifest_path)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Processed provenance manifest not found: {path.resolve()}. "
+            "Run preprocessing with a collection manifest or use --split-by clip."
+        )
+    with path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("records"), list):
+        raise ValueError(f"Processed manifest must contain a records list: {path.resolve()}")
+
+    key = f"{group_by}_id"
+    group_by_path: dict[str, str] = {}
+    for record in manifest["records"]:
+        if not isinstance(record, dict):
+            continue
+        processed_path = record.get("relative_processed_path")
+        collection = record.get("collection")
+        conditions = collection.get("conditions") if isinstance(collection, dict) else None
+        group_id = conditions.get(key) if isinstance(conditions, dict) else None
+        if isinstance(processed_path, str) and isinstance(group_id, str) and group_id:
+            if processed_path in group_by_path and group_by_path[processed_path] != group_id:
+                raise ValueError(f"Conflicting {group_by} metadata for {processed_path}.")
+            group_by_path[processed_path] = group_id
+
+    groups: list[str] = []
+    missing: list[str] = []
+    for sample in dataset.samples:
+        relative_path = sample.path.relative_to(dataset.data_dir).as_posix()
+        group_id = group_by_path.get(relative_path)
+        if group_id is None:
+            missing.append(relative_path)
+        else:
+            groups.append(group_id)
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise ValueError(
+            f"Missing {group_by} provenance for {len(missing)} sample(s), including {preview}."
+        )
+    return groups
+
+
+def make_grouped_splits(
+    dataset: ISLSequenceDataset,
+    groups: list[str],
+    train_fraction: float = 0.6,
+    validation_fraction: float = 0.2,
+    test_fraction: float = 0.2,
+    seed: int = 42,
+) -> tuple[Subset[ISLSequenceDataset], Subset[ISLSequenceDataset], Subset[ISLSequenceDataset]]:
+    """Split by signer/session groups while approximately preserving class proportions."""
+
+    fractions = np.asarray(
+        [train_fraction, validation_fraction, test_fraction], dtype=np.float64
+    )
+    if not np.isclose(fractions.sum(), 1.0):
+        raise ValueError("train, validation, and test fractions must add up to 1.0.")
+    if np.any(fractions <= 0):
+        raise ValueError("All split fractions must be greater than zero.")
+    if len(groups) != len(dataset.samples):
+        raise ValueError("There must be exactly one group ID for every dataset sample.")
+    if any(not isinstance(group, str) or not group for group in groups):
+        raise ValueError("Group IDs must be non-empty strings.")
+
+    indices_by_group: dict[str, list[int]] = defaultdict(list)
+    for index, group in enumerate(groups):
+        indices_by_group[group].append(index)
+    if len(indices_by_group) < 3:
+        raise ValueError("At least three distinct groups are needed for three-way evaluation.")
+
+    class_count = len(dataset.class_names)
+    group_counts: dict[str, np.ndarray] = {}
+    for group, indices in indices_by_group.items():
+        counts = np.zeros(class_count, dtype=np.float64)
+        for index in indices:
+            counts[dataset.labels[index]] += 1
+        group_counts[group] = counts
+
+    groups_per_class = np.sum(
+        np.stack([counts > 0 for counts in group_counts.values()]), axis=0
+    )
+    missing_classes = [
+        dataset.class_names[index]
+        for index, count in enumerate(groups_per_class)
+        if count < 3
+    ]
+    if missing_classes:
+        raise ValueError(
+            "Every class must occur in at least three distinct groups for train, "
+            f"validation, and test splits. Insufficient groups: {', '.join(missing_classes)}."
+        )
+
+    target_counts = fractions[:, None] * np.bincount(
+        dataset.labels, minlength=class_count
+    )[None, :]
+    scale = np.maximum(target_counts, 1.0)
+    rng = np.random.default_rng(seed)
+    best_assignment: dict[str, int] | None = None
+    best_score = float("inf")
+
+    # Retry randomized group orderings because greedy assignments can otherwise
+    # leave a class out of one split when signer class counts are uneven.
+    for _ in range(256):
+        ordered_groups = list(indices_by_group)
+        rng.shuffle(ordered_groups)
+        ordered_groups.sort(
+            key=lambda group: float(group_counts[group].max()), reverse=True
+        )
+        split_counts = np.zeros_like(target_counts)
+        assignment: dict[str, int] = {}
+
+        for group in ordered_groups:
+            candidate_scores: list[float] = []
+            for split_index in range(3):
+                split_counts[split_index] += group_counts[group]
+                score = float(np.square((split_counts - target_counts) / scale).sum())
+                candidate_scores.append(score)
+                split_counts[split_index] -= group_counts[group]
+            minimum = min(candidate_scores)
+            candidates = [
+                index
+                for index, score in enumerate(candidate_scores)
+                if np.isclose(score, minimum)
+            ]
+            selected = int(rng.choice(candidates))
+            assignment[group] = selected
+            split_counts[selected] += group_counts[group]
+
+        present = split_counts > 0
+        if not present.all():
+            continue
+        score = float(np.square((split_counts - target_counts) / scale).sum())
+        if score < best_score:
+            best_assignment = assignment
+            best_score = score
+
+    if best_assignment is None:
+        raise ValueError(
+            "Could not create group-disjoint splits containing every class. "
+            "Collect more sessions/signers with examples of each class."
+        )
+
+    split_indices: list[list[int]] = [[], [], []]
+    for group, indices in indices_by_group.items():
+        split_indices[best_assignment[group]].extend(indices)
+    for indices in split_indices:
+        rng.shuffle(indices)
+    return (
+        Subset(dataset, split_indices[0]),
+        Subset(dataset, split_indices[1]),
+        Subset(dataset, split_indices[2]),
     )
 
 

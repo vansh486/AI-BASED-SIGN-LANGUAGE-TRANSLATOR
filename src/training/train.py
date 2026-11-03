@@ -1,4 +1,4 @@
-"""Reproducible training entry point for the isolated-sign baseline."""
+"""Reproducible training entry point for isolated-sign classifiers."""
 
 from __future__ import annotations
 
@@ -18,9 +18,11 @@ from src.data.loader import (
     FEATURE_DIM,
     FeatureTransformDataset,
     ISLSequenceDataset,
+    load_sample_groups,
+    make_grouped_splits,
     make_stratified_splits,
 )
-from src.models.hybrid import IsolatedSignClassifier
+from src.models.hybrid import build_classifier
 from src.training.evaluate import evaluate_model
 from src.utils.checkpoints import CHECKPOINT_SCHEMA_VERSION, atomic_torch_save, load_checkpoint
 from src.utils.io import atomic_json_save
@@ -120,13 +122,21 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     set_global_seed(args.seed)
     device = resolve_device(args.device)
     dataset = ISLSequenceDataset(args.data_dir, sequence_length=args.sequence_length)
-    train_set, validation_set, test_set = make_stratified_splits(
-        dataset,
-        train_fraction=args.train_fraction,
-        validation_fraction=args.validation_fraction,
-        test_fraction=args.test_fraction,
-        seed=args.seed,
-    )
+    split_arguments = {
+        "train_fraction": args.train_fraction,
+        "validation_fraction": args.validation_fraction,
+        "test_fraction": args.test_fraction,
+        "seed": args.seed,
+    }
+    if args.split_by == "clip":
+        train_set, validation_set, test_set = make_stratified_splits(
+            dataset, **split_arguments
+        )
+    else:
+        groups = load_sample_groups(dataset, args.split_by, args.processed_manifest)
+        train_set, validation_set, test_set = make_grouped_splits(
+            dataset, groups, **split_arguments
+        )
     if len(dataset.class_names) < 2:
         raise ValueError("At least two class directories are required for training.")
 
@@ -137,27 +147,40 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     validation_loader = make_dataloader(validation_set, args.batch_size, False, args.num_workers, device)
     test_loader = make_dataloader(test_set, args.batch_size, False, args.num_workers, device)
 
-    model = IsolatedSignClassifier(
-        num_classes=len(dataset.class_names),
-        input_dim=FEATURE_DIM,
-        sequence_length=args.sequence_length,
-        hidden_dim=args.hidden_dim,
-        num_heads=args.num_heads,
-        num_layers=args.num_layers,
-        feedforward_dim=args.feedforward_dim,
-        dropout=args.dropout,
-    ).to(device)
+    model_types = {
+        "baseline": "IsolatedSignClassifier",
+        "stgcn_transformer": "STGCNTransformerClassifier",
+    }
+    checkpoint_model_type = model_types[args.model_type]
+    model_config = {
+        "num_classes": len(dataset.class_names),
+        "input_dim": FEATURE_DIM,
+        "sequence_length": args.sequence_length,
+        "hidden_dim": args.hidden_dim,
+        "num_heads": args.num_heads,
+        "num_layers": args.num_layers,
+        "feedforward_dim": args.feedforward_dim,
+        "dropout": args.dropout,
+    }
+    if args.model_type == "stgcn_transformer":
+        model_config["graph_num_blocks"] = args.graph_num_blocks
+    model = build_classifier(checkpoint_model_type, model_config).to(device)
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=max(1, args.patience // 3)
     )
 
-    checkpoint_path = Path(args.checkpoint)
+    default_checkpoints = {
+        "baseline": "models/isolated_sign_classifier.pt",
+        "stgcn_transformer": "models/stgcn_transformer.pt",
+    }
+    checkpoint_path = Path(args.checkpoint or default_checkpoints[args.model_type])
     print(
         f"Training {len(dataset.class_names)} classes on {device}: "
         f"train={len(train_set)}, validation={len(validation_set)}, test={len(test_set)}"
     )
+    print(f"Split strategy: {args.split_by}")
     print(f"Class distribution: {dataset.summary()}")
     print(f"Training augmentation: {augmentation_config.to_dict()}")
 
@@ -195,7 +218,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
             atomic_torch_save(
                 {
                     "schema_version": CHECKPOINT_SCHEMA_VERSION,
-                    "model_type": "IsolatedSignClassifier",
+                    "model_type": checkpoint_model_type,
                     "model_config": model.model_config,
                     "state_dict": model.state_dict(),
                     "class_names": dataset.class_names,
@@ -204,6 +227,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
                     "augmentation": augmentation_config.to_dict(),
                     "training": {
                         "seed": args.seed,
+                        "split_by": args.split_by,
                         "best_epoch": best_epoch,
                         "best_validation_loss": best_validation_loss,
                         "data_split": {
@@ -229,6 +253,7 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     report = {
         "checkpoint": str(checkpoint_path),
         "best_epoch": best_epoch,
+        "split_by": args.split_by,
         "validation": checkpoint["validation_metrics"],
         "test": test_metrics,
         "history": history,
@@ -245,9 +270,15 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train the isolated-sign classifier.")
+    parser = argparse.ArgumentParser(description="Train an isolated-sign classifier.")
     parser.add_argument("--data-dir", default="data/processed")
-    parser.add_argument("--checkpoint", default="models/isolated_sign_classifier.pt")
+    parser.add_argument(
+        "--model-type",
+        choices=("stgcn_transformer", "baseline"),
+        default="stgcn_transformer",
+        help="Use the graph-based model or the original frame-wise baseline.",
+    )
+    parser.add_argument("--checkpoint", default=None)
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -258,7 +289,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-heads", type=int, default=4)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--feedforward-dim", type=int, default=192)
+    parser.add_argument("--graph-num-blocks", type=int, default=3)
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
+    parser.add_argument(
+        "--split-by",
+        choices=("clip", "session", "signer"),
+        default="session",
+        help="Split randomly by clip or keep each recording session/signer in one split.",
+    )
+    parser.add_argument(
+        "--processed-manifest", default="data/metadata/processed_manifest.json"
+    )
     parser.add_argument("--train-fraction", type=float, default=0.6)
     parser.add_argument("--validation-fraction", type=float, default=0.2)
     parser.add_argument("--test-fraction", type=float, default=0.2)

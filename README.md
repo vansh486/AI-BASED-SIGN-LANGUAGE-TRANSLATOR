@@ -1,116 +1,146 @@
 # AI-Based Sign Language Translator
 
-This repository currently is in developing phase currently it is using isolated-sign baseline and this project is divided into phases in which the Phase 1 data-collection and landmark-augmentation tooling. It accepts a short clip, extracts 258 MediaPipe pose-and-hand features per frame, and predicts one sign class is done .
+## Project overview
 
-It is not yet a continuous sign translator. It does not use CTC, a real ST-GCN, gloss-to-English translation, an API, or a client application. Those are later phases and must be evaluated separately.
+This project is being developed toward a two-way sign-language communication system. The first working stage recognizes **one isolated sign at a time** from a webcam. Continuous translation, speech processing, and the 3D avatar are future stages.
 
-## Phase 0 contract
+The current recognition labels are determined by the folders in `data/processed`. The sample data in this repository has five labels: `hello`, `help`, `no`, `thank_you`, and `yes`.
 
-- Input: one isolated sign recorded in a short clip.
-- Features: 33 pose landmarks with visibility, plus 21 left-hand and 21 right-hand landmarks.
-- Feature dimension: 258 values per frame.
-- Sequence policy: every clip is temporally resampled to 90 frames. No clip tail is silently truncated.
-- Model: landmark feature encoder, positional Transformer, attention pooling, and classification head.
-- Evaluation: deterministic class-stratified train/validation/test splits with accuracy, macro F1, per-class metrics, and a confusion matrix.
-- Model artifact: a versioned checkpoint containing model settings, classes, sequence length, metrics, and weights.
+## Proposed full architecture
 
-## Phase 1: data collection and landmark augmentation
+```text
+SIGN TO SPEECH
+Camera -> OpenCV -> MediaPipe landmarks -> ST-GCN -> Transformer
+       -> Gloss sequence -> NLP -> English text -> Text-to-speech
 
-Phase 1 code is ready, but the current dataset is not ready: it has 15 clips for each of five classes, no `no_sign` class, and no collection provenance. Do not retrain or claim Phase 1 results until the audit passes.
-
-### Collection standard
-
-- Collect 50 clips per class, including `no_sign`; 40 is the enforced minimum.
-- Use at least five sessions with a small batch per class in each session, instead of recording all 50 under one condition.
-- Vary lighting, camera distance, clothing, signer speed, camera angle, and ideally signer identity between sessions.
-- `no_sign` clips must include neutral posture, ordinary movement, hands entering/exiting the frame, and non-target gestures. Do not perform any target sign.
-- Every raw clip is recorded in `data/metadata/collection_manifest.json` with its session and conditions. Preprocessing creates `data/metadata/processed_manifest.json`, linking each `.npy` sample back to its source video.
-
-Example: capture ten clips of every class for one documented session. Repeat this command for five varied sessions, changing the condition values each time.
-
-```powershell
-.\venv\Scripts\python -m src.data.record_videos --samples-this-session 10 --signer-id signer_01 --session-id session_01 --lighting bright_indoor --distance medium --clothing dark_long_sleeve --speed normal --camera-angle frontal
+SPEECH TO SIGN
+Voice -> Speech-to-text -> NLP -> Sign glosses
+      -> Motion generation -> 3D motion -> Three.js avatar
 ```
 
-When resuming collection, use the default target mode to fill any class that still has fewer than 50 raw clips:
+Only the isolated-sign recognition portion is currently implemented. This README distinguishes working code from planned blocks so the project status is clear.
 
-```powershell
-.\venv\Scripts\python -m src.data.record_videos --signer-id signer_02 --session-id session_06 --lighting low_indoor --distance far --clothing light_short_sleeve --speed fast --camera-angle slight_left
+## Implemented recognition pipeline
+
+```text
+Webcam -> OpenCV -> MediaPipe pose and hand landmarks
+       -> ST-GCN -> temporal Transformer -> sign class prediction
 ```
 
-Extract landmarks and preserve the provenance manifest:
+1. OpenCV reads webcam frames.
+2. MediaPipe Holistic extracts 33 pose landmarks and 21 landmarks for each hand.
+3. Each frame is represented by 258 values. The dataset loader resamples clips to 90 frames.
+4. The ST-GCN treats the body and hands as a graph of 75 joints. It aggregates connected-joint information and applies temporal convolutions to learn movement over time.
+5. A Transformer models longer-range frame relationships, and the classifier predicts one label.
+6. Webcam inference averages recent probabilities and displays predictions above a confidence threshold.
 
-```powershell
-.\venv\Scripts\python -m src.data.preprocess
-```
+The older frame-wise landmark encoder is retained as a baseline for comparison. Training defaults to the real graph model with `--model-type stgcn_transformer`; the previous compatibility wrapper has been replaced by graph and temporal convolution layers.
 
-Audit the processed dataset before training. `--strict` returns a non-zero status until every class, including `no_sign`, meets the sample and provenance requirements.
+## Project status and limitations
 
-```powershell
-.\venv\Scripts\python -m src.data.audit --strict
-```
+- Implemented: video collection tools, MediaPipe landmark extraction, preprocessing, data validation/resampling, training-only augmentation, a frame-wise baseline, the ST-GCN + Transformer classifier, evaluation metrics, and webcam inference.
+- Not yet implemented: continuous gloss recognition, gloss-to-English NLP, speech-to-text, text-to-speech, motion generation, Three.js avatar, a working API, and a web/mobile client. The current API entry point and NLP service are empty.
+- The checked-in sample data has 15 clips for each of five classes (75 clips total), no `no_sign` class, and no recorded multi-session provenance. It is suitable for development tests, not for claiming general-purpose performance.
+- The existing `models/isolated_sign_classifier.metrics.json` report is from the earlier baseline: 66.7% accuracy and 0.651 macro F1 on 15 test samples. It is **not** a result for the new ST-GCN model. Train the graph model and evaluate it before reporting its performance.
+- Training supports clip-, session-, and signer-disjoint splits. The current checked-in data has no provenance manifest, so only the clip split can currently be used with it. For new documented recordings, prefer a session- or signer-based split; every class must appear in at least three groups.
+- Model checkpoints, raw videos, and collection metadata are ignored by Git. A fresh clone may not include local datasets or trained models.
 
-### Augmentation policy
+## Repository map
 
-Augmentation runs only for the training split and creates fresh variants each epoch. It never writes duplicate `.npy` files and does not touch validation or test samples. The default policy applies conservative image-plane rotation, body-centered scale jitter, coordinate noise, frame replacement for dropped frames, and temporal rate warping. Pose visibility and absent-hand zero values are preserved. Horizontal flipping is deliberately excluded because it is not reliably label-preserving for sign language.
+| Path | Purpose |
+| --- | --- |
+| `src/data/record_videos.py` | Records labeled videos and documents collection conditions. |
+| `src/data/landmarks.py` | Extracts pose and hand landmarks with MediaPipe. |
+| `src/data/preprocess.py` | Converts raw videos to landmark NumPy sequences. |
+| `src/data/loader.py` | Validates, loads, resamples, and splits landmark sequences. |
+| `src/data/augment.py` | Applies geometric and temporal augmentation to training data. |
+| `src/data/audit.py` | Checks dataset size, metadata, and recording variation. |
+| `src/models/stgcn.py` | Defines the 75-joint graph and spatial-temporal graph convolution. |
+| `src/models/hybrid.py` | Defines the baseline and ST-GCN + Transformer classifiers. |
+| `src/models/transformer.py` | Encodes frame order with a temporal Transformer. |
+| `src/training/` | Trains classifiers and reports held-out metrics. |
+| `src/inference/predict.py` | Runs real-time webcam predictions from a saved checkpoint. |
+| `src/utils/` | Saves and validates checkpoints and metadata. |
+| `tests/` | Tests the data pipeline, augmentation, and models. |
+| `api/`, `frontend/`, `notebooks/` | Future application and experimentation areas; currently incomplete. |
 
 ## Setup
 
-Use Python 3.10 or later. From the repository root:
+Use Python 3.10 or later. Run these commands from the repository root in PowerShell:
 
 ```powershell
-.\venv\Scripts\python -m pip install -r requirements.txt
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Dataset requirements
+## Collect and prepare data
 
-Processed samples must follow this structure:
-
-```text
-data/processed/
-  hello/hello_0.npy
-  help/help_0.npy
-  no/no_0.npy
-  no_sign/no_sign_0.npy
-```
-
-Each `.npy` file must have shape `[frames, 258]`, contain finite values, and have at least one frame. Training fails early if a sequence is malformed or if a class has fewer than three samples.
-
-For meaningful results, collect at least 40 to 50 clips for every sign and for `no_sign`. The current processed dataset has 15 clips per target class and no `no_sign` class, so it is useful only for a smoke-test baseline, not a reliable live system.
-
-## Workflow
-
-Train the baseline after the Phase 1 audit passes. Landmark augmentation is enabled by default and its exact configuration is stored inside the checkpoint. The best validation checkpoint is saved atomically, then evaluated once on the held-out test set:
+Record a documented batch of ten videos per class in one session. The recorder's default class list includes `no_sign`.
 
 ```powershell
-.\venv\Scripts\python -m src.training.train
+.\.venv\Scripts\python.exe -m src.data.record_videos --samples-this-session 10 --signer-id signer_01 --session-id session_01 --lighting bright_indoor --distance medium --clothing casual --speed normal --camera-angle frontal
 ```
 
-Read the evaluation report at `models/isolated_sign_classifier.metrics.json`. Do not report training accuracy as model performance; use the held-out test macro F1 and confusion matrix.
+Repeat across different sessions and, where possible, different signers and conditions. Include neutral posture and non-target movement in `no_sign` recordings.
 
-Run webcam inference with the matching checkpoint:
+Extract landmarks and audit the result:
 
 ```powershell
-.\venv\Scripts\python -m src.inference.predict --threshold 0.75
+.\.venv\Scripts\python.exe -m src.data.preprocess
+.\.venv\Scripts\python.exe -m src.data.audit --strict
 ```
 
-Inference only emits a sign above the confidence threshold. It averages the last five probability vectors to reduce flicker. A trained `no_sign` class is still required for reliable rejection.
+The strict audit requires at least 40 samples per class, a `no_sign` class, at least five sessions per class, variation in collection conditions, and provenance records. The current sample dataset does not pass this audit. Collect data before relying on model results.
 
-Run automated checks:
+Each processed `.npy` sequence has shape `[frames, 258]`, with finite values and at least one frame. Training resamples each sequence to the configured length.
+
+## Train and evaluate
+
+The default command trains the ST-GCN + Transformer model using session-disjoint splits and saves it separately from the baseline:
 
 ```powershell
-.\venv\Scripts\python -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m src.training.train
 ```
 
-## Evaluation discipline
+Default graph-model checkpoint: `models/stgcn_transformer.pt`. Its report is saved beside it as `models/stgcn_transformer.metrics.json`.
 
-Keep the test set untouched until model choices are final. With videos captured in one session, random clip splits can overestimate performance because lighting, signer, clothing, and background leak across splits. Before claiming generalization, create splits by recording session or signer and test under unseen conditions.
+Session-based splitting is the default and uses `data/metadata/processed_manifest.json` to keep every session entirely within one split. Use `--split-by signer` to keep signer identities disjoint instead. Each class must have examples across at least three distinct selected groups. If using the old sample data without provenance, pass `--split-by clip`; its result is not a signer/session generalization estimate.
 
-## Next phases
+To train the original frame-wise baseline for comparison:
 
-1. Expand and augment landmark data only after the Phase 0 metrics are trustworthy.
-2. Train a real graph model and improve the isolated-sign model if the augmented baseline is insufficient.
-3. Move to continuous signing only after collecting continuous sequences with time-aligned gloss labels; then CTC becomes appropriate.
-4. Add gloss-to-text, FastAPI, a client, profiling, ONNX export, and deployment after the recognition contract is stable.
-5. Add more data samples to testing and developing and also add some already made dataset like include-50, and if system supported we will also have a plan to implement ISL translate dataset in this project.
-6. In upcoming phases we are going to use react based system for testing and for deployment we are going to use flutter application for users.
+```powershell
+.\.venv\Scripts\python.exe -m src.training.train --model-type baseline
+```
+
+The baseline checkpoint is `models/isolated_sign_classifier.pt`. You can override either output path with `--checkpoint`. Compare test macro F1, per-class results, and confusion matrices using the same data split; do not compare training accuracy.
+
+## Run webcam recognition
+
+After training the graph model:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.inference.predict --threshold 0.75
+```
+
+The default checkpoint is `models/stgcn_transformer.pt`. To use another checkpoint:
+
+```powershell
+.\.venv\Scripts\python.exe -m src.inference.predict --checkpoint models/isolated_sign_classifier.pt
+```
+
+Press `q` to close the webcam window. A trained `no_sign` class is needed for the model to learn a background/no-target category; the confidence threshold alone is not a substitute for that data.
+
+## Run tests
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+## Next development stages
+
+1. Collect a larger, diverse isolated-sign dataset, including `no_sign`, and keep signer/session metadata.
+2. Train and compare the ST-GCN and baseline with signer-held-out evaluation; tune using validation data and keep the final test group untouched.
+3. Collect continuous signing videos with time-aligned gloss labels before developing continuous gloss recognition.
+4. Build and evaluate gloss-to-English and speech-to-gloss stages. These require representative examples and a defined gloss vocabulary.
+5. Create or source properly licensed sign-motion assets, map glosses to avatar motions, and then implement the Three.js avatar.
+6. Add the API and user-facing web/mobile application after the recognition and translation components have stable interfaces.
