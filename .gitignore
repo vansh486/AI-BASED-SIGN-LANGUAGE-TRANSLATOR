@@ -8,12 +8,19 @@ venv/
 data/raw_isl/
 data/raw_videos/
 data/metadata/
+data/include50/
 
 # Saved AI Models (These files are too big)
 models/*.pth
 models/*.pt
 models/*.h5
 models/*.metrics.json
+
+# React frontend generated files and local configuration
+frontend/web/node_modules/
+frontend/web/dist/
+frontend/web/*.local
+frontend/web/*.tsbuildinfo
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

@@ -19,6 +19,7 @@ from src.data.loader import (
     FeatureTransformDataset,
     ISLSequenceDataset,
     load_sample_groups,
+    load_official_splits,
     make_grouped_splits,
     make_stratified_splits,
 )
@@ -131,6 +132,10 @@ def train_model(args: argparse.Namespace) -> dict[str, Any]:
     if args.split_by == "clip":
         train_set, validation_set, test_set = make_stratified_splits(
             dataset, **split_arguments
+        )
+    elif args.split_by == "official":
+        train_set, validation_set, test_set = load_official_splits(
+            dataset, args.processed_manifest
         )
     else:
         groups = load_sample_groups(dataset, args.split_by, args.processed_manifest)
@@ -293,9 +298,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument(
         "--split-by",
-        choices=("clip", "session", "signer"),
+        choices=("clip", "session", "signer", "official"),
         default="session",
-        help="Split randomly by clip or keep each recording session/signer in one split.",
+        help="Split by clip, recording group, or source dataset's official assignments.",
     )
     parser.add_argument(
         "--processed-manifest", default="data/metadata/processed_manifest.json"

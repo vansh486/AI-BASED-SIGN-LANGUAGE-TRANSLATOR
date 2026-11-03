@@ -26,7 +26,7 @@ class SampleRecord:
     class_name: str
 
 
-def _validate_sequence(sequence: np.ndarray, source: Path | str) -> None:
+def validate_sequence(sequence: np.ndarray, source: Path | str) -> None:
     if sequence.ndim != 2:
         raise ValueError(f"{source} must be a 2D array, got shape {sequence.shape}.")
     if sequence.shape[0] == 0:
@@ -51,7 +51,7 @@ def resample_sequence(sequence: np.ndarray, sequence_length: int) -> np.ndarray:
         raise ValueError("sequence_length must be greater than zero.")
 
     array = np.asarray(sequence, dtype=np.float32)
-    _validate_sequence(array, "sequence")
+    validate_sequence(array, "sequence")
     if len(array) == sequence_length:
         return np.ascontiguousarray(array)
 
@@ -103,7 +103,7 @@ class ISLSequenceDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
                 # Validate the complete dataset before training begins. This avoids a
                 # failure halfway through an expensive training run.
                 sequence = np.load(file_path, allow_pickle=False)
-                _validate_sequence(sequence, file_path)
+                validate_sequence(sequence, file_path)
                 label = self.label_to_idx[class_name]
                 self.samples.append(SampleRecord(file_path, label, class_name))
                 self.labels.append(label)
@@ -264,6 +264,64 @@ def load_sample_groups(
             f"Missing {group_by} provenance for {len(missing)} sample(s), including {preview}."
         )
     return groups
+
+
+def load_official_splits(
+    dataset: ISLSequenceDataset,
+    manifest_path: str | Path,
+) -> tuple[Subset[ISLSequenceDataset], Subset[ISLSequenceDataset], Subset[ISLSequenceDataset]]:
+    """Create train/validation/test subsets from source-dataset split metadata."""
+
+    path = Path(manifest_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Processed manifest not found: {path.resolve()}")
+    with path.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("records"), list):
+        raise ValueError(f"Processed manifest must contain a records list: {path.resolve()}")
+
+    split_by_path: dict[str, str] = {}
+    for record in manifest["records"]:
+        if not isinstance(record, dict):
+            continue
+        processed_path = record.get("relative_processed_path")
+        split = record.get("official_split")
+        if isinstance(processed_path, str) and isinstance(split, str):
+            normalized_split = split.strip().lower()
+            if normalized_split not in {"train", "val", "test"}:
+                raise ValueError(
+                    f"Invalid official split {split!r} for {processed_path}."
+                )
+            previous_split = split_by_path.get(processed_path)
+            if previous_split is not None and previous_split != normalized_split:
+                raise ValueError(
+                    f"Conflicting official splits for processed sample {processed_path}."
+                )
+            split_by_path[processed_path] = normalized_split
+
+    indices: dict[str, list[int]] = {"train": [], "val": [], "test": []}
+    missing: list[str] = []
+    for index, sample in enumerate(dataset.samples):
+        relative_path = sample.path.relative_to(dataset.data_dir).as_posix()
+        split = split_by_path.get(relative_path)
+        if split is None:
+            missing.append(relative_path)
+        else:
+            indices[split].append(index)
+    if missing:
+        preview = ", ".join(missing[:3])
+        raise ValueError(
+            f"Missing official split metadata for {len(missing)} sample(s), including {preview}."
+        )
+    empty_splits = [split for split, split_indices in indices.items() if not split_indices]
+    if empty_splits:
+        raise ValueError(f"Official split(s) contain no samples: {', '.join(empty_splits)}.")
+
+    return (
+        Subset(dataset, indices["train"]),
+        Subset(dataset, indices["val"]),
+        Subset(dataset, indices["test"]),
+    )
 
 
 def make_grouped_splits(

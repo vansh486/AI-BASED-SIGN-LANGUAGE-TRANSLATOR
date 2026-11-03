@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import tempfile
 import unittest
@@ -13,11 +14,48 @@ from src.data.loader import (
     make_grouped_splits,
     make_stratified_splits,
     load_sample_groups,
+    load_official_splits,
     resample_sequence,
 )
+from src.data.import_include50 import _load_index
 
 
 class DataPipelineTests(unittest.TestCase):
+    def test_include50_index_maps_labels_and_validates_video_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            video_root = root / "videos"
+            video_path = video_root / "Greetings" / "Thank you" / "clip.MOV"
+            video_path.parent.mkdir(parents=True)
+            video_path.write_bytes(b"video placeholder")
+            index_path = root / "index.csv"
+            with index_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=["relative_path", "clean_label", "official_split"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "relative_path": "Greetings/Thank you/clip.MOV",
+                        "clean_label": "Thank you",
+                        "official_split": "val",
+                    }
+                )
+
+            rows = _load_index(index_path, video_root)
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "relative_video_path": "Greetings/Thank you/clip.MOV",
+                    "class_name": "thank_you",
+                    "official_split": "val",
+                }
+            ],
+        )
+
     def test_resampling_preserves_sequence_endpoints(self) -> None:
         sequence = np.zeros((4, FEATURE_DIM), dtype=np.float32)
         sequence[:, 0] = [0.0, 1.0, 2.0, 3.0]
@@ -95,6 +133,37 @@ class DataPipelineTests(unittest.TestCase):
             actual_groups = load_sample_groups(dataset, "session", manifest_path)
 
         self.assertEqual(actual_groups, expected_groups)
+
+    def test_official_splits_follow_manifest_and_cover_each_sample_once(self) -> None:
+        dataset = ISLSequenceDataset(Path("data/processed"), sequence_length=12)
+        records = []
+        expected = {"train": 0, "val": 0, "test": 0}
+        for index, sample in enumerate(dataset.samples):
+            split = ("train", "val", "test")[index % 3]
+            expected[split] += 1
+            records.append(
+                {
+                    "relative_processed_path": sample.path.relative_to(
+                        dataset.data_dir
+                    ).as_posix(),
+                    "official_split": split,
+                }
+            )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manifest_path = Path(temporary_directory) / "processed_manifest.json"
+            manifest_path.write_text(
+                json.dumps({"records": records}), encoding="utf-8"
+            )
+            train_set, validation_set, test_set = load_official_splits(
+                dataset, manifest_path
+            )
+
+        self.assertEqual(len(train_set), expected["train"])
+        self.assertEqual(len(validation_set), expected["val"])
+        self.assertEqual(len(test_set), expected["test"])
+        all_indices = train_set.indices + validation_set.indices + test_set.indices
+        self.assertEqual(sorted(all_indices), list(range(len(dataset))))
 
 
 if __name__ == "__main__":

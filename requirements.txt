@@ -13,6 +13,8 @@ torchvision
 # --- Backend API ---
 fastapi
 uvicorn
+websockets
+python-multipart
 
 # --- Notebooks for Experimentation ---
 jupyter

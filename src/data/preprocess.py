@@ -70,7 +70,7 @@ def _upsert_processed_record(path: Path, record: dict[str, Any]) -> None:
     atomic_json_save(manifest, path)
 
 
-def _extract_video_sequence(video_path: Path, extractor: LandmarkExtractor) -> np.ndarray:
+def extract_video_sequence(video_path: Path, extractor: LandmarkExtractor) -> np.ndarray:
     capture = cv2.VideoCapture(str(video_path))
     if not capture.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -114,7 +114,7 @@ def preprocess_videos(
                     sequence = np.load(output_file, allow_pickle=False)
                     print(f"Skipping existing file: {output_file}")
                 else:
-                    sequence = _extract_video_sequence(video_path, extractor)
+                    sequence = extract_video_sequence(video_path, extractor)
                     atomic_numpy_save(sequence, output_file)
                     processed_count += 1
                     print(f"Processed {video_path} -> {output_file} {tuple(sequence.shape)}")
