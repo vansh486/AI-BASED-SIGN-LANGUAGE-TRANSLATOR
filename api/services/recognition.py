@@ -16,6 +16,7 @@ import torch
 from src.data.landmarks import FEATURE_DIM, LandmarkExtractor
 from src.data.loader import resample_sequence, validate_sequence
 from src.inference.predict import load_model
+from api.services.nlp import gloss_to_english
 
 
 MAX_JPEG_BYTES = 1_000_000
@@ -87,6 +88,7 @@ class RecognitionEngine:
             return {
                 "recognized": False,
                 "gloss": None,
+                "english_text": None,
                 "confidence": 0.0,
                 "top_predictions": [],
                 "message": (
@@ -113,6 +115,7 @@ class RecognitionEngine:
         return {
             "recognized": True,
             "gloss": top["gloss"],
+            "english_text": gloss_to_english(top["gloss"]),
             "confidence": top["confidence"],
             "top_predictions": top_predictions,
         }
@@ -140,7 +143,9 @@ class RecognitionEngine:
             raise InvalidMediaError("The WebSocket message is not a valid JPEG image.")
         return frame
 
-    def predict_video(self, content: bytes, suffix: str) -> dict[str, Any]:
+    def predict_video(
+        self, content: bytes, suffix: str, mirror_horizontal: bool = False
+    ) -> dict[str, Any]:
         """Extract a bounded video to landmarks and predict its isolated sign."""
 
         if suffix.lower() not in {".mp4", ".mov", ".webm"}:
@@ -183,6 +188,8 @@ class RecognitionEngine:
                     raise MediaTooLargeError(
                         "Video frames must not exceed 1920×1080 pixels."
                     )
+                if mirror_horizontal:
+                    frame = cv2.flip(frame, 1)
                 frames.append(self.extract_frame(frame, extractor))
         finally:
             if capture is not None:
@@ -221,7 +228,8 @@ def configured_device() -> str:
 def configured_frontend_origins() -> list[str]:
     configured = os.environ.get(
         "SIGN_FRONTEND_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174",
     )
     return [origin.strip() for origin in configured.split(",") if origin.strip()]
 

@@ -32,6 +32,7 @@ from api.services.recognition import (
     configured_frontend_origins,
     new_live_state,
 )
+from api.services.nlp import text_to_glosses
 from src.data.landmarks import LandmarkExtractor
 
 
@@ -99,6 +100,10 @@ async def model_info() -> dict:
     engines = get_engines()
     return {
         **engines["custom"].model_info,
+        "features": {
+            **engines["custom"].model_info["features"],
+            "text_to_gloss": True,
+        },
         "models": {profile: engine.model_info for profile, engine in engines.items()},
     }
 
@@ -106,7 +111,8 @@ async def model_info() -> dict:
 @app.post("/api/v1/predict-video")
 async def predict_video(
     file: UploadFile = File(...),
-    model: Literal["custom", "include50"] = Form("include50"),
+    model: Literal["custom", "include50"] = Form("custom"),
+    mirror_horizontal: bool = Form(False),
 ) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".mp4", ".mov", ".webm"}:
@@ -123,30 +129,48 @@ async def predict_video(
         )
     try:
         engine = get_engine(model)
-        result = await run_in_threadpool(engine.predict_video, content, suffix)
+        result = await run_in_threadpool(
+            engine.predict_video, content, suffix, mirror_horizontal
+        )
     except MediaTooLargeError as error:
         raise HTTPException(status_code=413, detail=str(error)) from error
     except InvalidMediaError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    result["english_text"] = None
     result["model"] = model
     result["model_name"] = (
         "Custom dataset (5 signs)" if model == "custom" else "INCLUDE-50 (50 signs)"
     )
+    result["mirror_horizontal"] = mirror_horizontal
     return result
 
 
 @app.post("/api/v1/speech-to-sign")
-async def speech_to_sign(request: SpeechToSignRequest) -> None:
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Speech-to-sign is not implemented yet. Speech recognition, "
-            "gloss generation, and avatar motion are planned stages."
-        ),
-    )
+async def speech_to_sign(request: SpeechToSignRequest) -> dict:
+    glosses, unmatched_words = text_to_glosses(request.text)
+    if not glosses:
+        message = (
+            "No words in this message match the current sign vocabulary. "
+            "Try a supported example such as Hello, Thank you, or Good morning."
+        )
+    elif unmatched_words:
+        message = (
+            "Showing glosses for known words only. These unmatched words have no "
+            "sign mapping yet: " + ", ".join(unmatched_words)
+        )
+    else:
+        message = (
+            "Glosses are matched from a limited vocabulary. Avatar sign animations "
+            "are not connected yet."
+        )
+    return {
+        "recognized_text": request.text,
+        "glosses": glosses,
+        "unmatched_words": unmatched_words,
+        "motions": [],
+        "message": message,
+    }
 
 
 @app.websocket("/ws/recognize")

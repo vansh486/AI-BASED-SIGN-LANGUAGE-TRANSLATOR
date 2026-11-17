@@ -1,245 +1,220 @@
 # AI-Based Sign Language Translator
 
-> **Start here:** this README explains what works today, how data moves through the project, what each important file does, and what is still needed before the full translator is complete.
+This project is a working prototype for recognizing **one sign at a time**. It has a React website, a FastAPI backend, MediaPipe landmark extraction, and a trained ST-GCN + Transformer classifier.
 
-## Explain the project to your mentor
+## A simple explanation for a project presentation
 
-### Start with these sections
+> “Our project recognizes an isolated sign from a short video. OpenCV reads the video, MediaPipe extracts body and hand points, and an ST-GCN plus Transformer model classifies the movement. The result is shown as a word and can be spoken by the browser. We have two separate recognition models: a five-sign model trained on our local examples, which is the default for live camera and uploaded videos, and an optional 50-label INCLUDE-50 model for uploaded videos. The reverse screen can look up supported words as sign glosses.”
 
-1. Read the short presentation below to introduce the project.
-2. Use [What works now](#what-works-now) and [How a video becomes a model input](#how-a-video-becomes-a-model-input) to explain the implementation.
-3. Use [Project status and limitations](#project-status-and-limitations) and [Next development stages](#next-development-stages) to describe remaining work.
-4. Use [Repository map: what each part is for](#repository-map-what-each-part-is-for) if your mentor asks about a file.
+## What the system does
 
-### Short presentation
-
-> “I am building a sign-language translator with a React website and a Python recognition backend. The implemented part recognizes one isolated sign at a time. We extract body and hand landmarks from video with MediaPipe, then an ST-GCN and Transformer classify the movement. We have two separately trained models: our five-sign model is used for live camera captures, and INCLUDE-50 is used for uploaded videos. The models are not merged. The website sends video to a FastAPI service; speech-to-sign, sentence-level translation, and the 3D avatar are future work.”
-
-### What works now
-
-| Area | Current status |
+| Part | Implemented behavior |
 | --- | --- |
-| Sign vocabulary | Two separate vocabularies: our five local signs and INCLUDE-50's 50 labels. |
-| Training | ST-GCN + Transformer checkpoints have been trained and evaluated for both datasets. |
-| Website and API | React website calls FastAPI for predictions and displays the selected model's result. |
-| Camera path | The website records a short camera clip on **Capture sign** and sends it to the custom five-sign model. |
-| Uploaded-video path | The user selects a recorded video and clicks **Analyze clip**; the API uses INCLUDE-50. |
-| Not complete yet | Continuous signing, backend English translation, a connected speech-to-text-to-sign pipeline, automatic speech output from a recognized sign, and the animated avatar. The website has a speech-to-sign screen and optional browser dictation, but those are not yet connected to a working translation backend. |
+| Sign recognition | Predicts one label from a short video; it does not continuously translate a stream of signs into a sentence. |
+| Live camera | The website records a short camera clip and sends it to the custom five-label model. |
+| Uploaded video | Choose either the custom five-label model (default, recommended for local signs) or INCLUDE-50. |
+| Landmark processing | OpenCV reads frames; MediaPipe Holistic extracts pose and hand landmarks. |
+| Classifier | The default model uses a spatial-temporal graph convolution network (ST-GCN), a temporal Transformer, and a classifier head. |
+| English and audio | The API formats the predicted label as a readable English word. The browser's built-in speech synthesis can speak that word when requested. This is not sentence translation. |
+| Speech-to-sign screen | Browser dictation can fill the text box; the user submits it to a fixed word/phrase-to-gloss lookup. Unsupported words are reported. |
+| 3D avatar | A procedural Three.js character can idle, rotate, and reset. It does **not** perform sign-language animations. |
 
-### What “using both datasets” means
+## Architecture and data flow
 
-Both trained models can be loaded by the same API at the same time. The app routes each request to one model:
-
-```text
-Live camera capture ──> custom model ──> hello / help / no / thank_you / yes
-Uploaded video      ──> INCLUDE-50  ──> one of its 50 labels
-```
-
-The datasets and vocabularies are **not combined into one model**. A model can only return labels it was trained on. In particular, the custom model cannot recognize the other 45 INCLUDE-50 signs.
-
-## Full project architecture
-
-This is the intended two-way translator architecture. Only the isolated-sign recognition part described below is implemented end to end.
-
-### Intended two-way pipeline
+### Sign video to a spoken word
 
 ```text
-SIGN TO SPEECH
-Camera -> OpenCV -> MediaPipe landmarks -> ST-GCN -> Transformer
-       -> Gloss sequence -> NLP -> English text -> Text-to-speech
-
-SPEECH TO SIGN
-Voice -> Speech-to-text -> NLP -> Sign glosses
-      -> Motion generation -> 3D motion -> Three.js avatar
-```
-
-Implemented today: isolated-sign recognition, a web frontend, and a REST API. Sentence translation and speech-to-sign remain planned stages.
-
-## Implemented recognition pipeline
-
-```text
-Webcam -> OpenCV -> MediaPipe pose and hand landmarks
-       -> ST-GCN -> temporal Transformer -> sign class prediction
-```
-
-1. OpenCV reads webcam frames.
-2. MediaPipe Holistic extracts 33 pose landmarks and 21 landmarks for each hand.
-3. Each frame is represented by 258 values. The dataset loader resamples clips to 90 frames.
-4. The ST-GCN treats the body and hands as a graph of 75 joints. It aggregates connected-joint information and applies temporal convolutions to learn movement over time.
-5. A Transformer models longer-range frame relationships, and the classifier predicts one label.
-6. The standalone Python webcam demo smooths recent probabilities and applies a confidence threshold. In the website, a user clicks **Capture sign** to record a short clip; the API reports when no hands were detected instead of forcing a class.
-
-The older frame-wise landmark encoder is retained as a baseline for comparison. Training defaults to the graph model with `--model-type stgcn_transformer`. Graph construction and graph convolution are implemented in `src/models/stgcn.py`; `src/models/graph.py` is currently an empty placeholder.
-
-## Data summary (easy to share)
-
-**In one sentence:** we have two separate video datasets. We turn each video into a sequence of MediaPipe body-and-hand landmarks, then train the sign classifier to predict the video’s label. The React website calls the FastAPI recognition backend; it does not train the model. The two models are selected by workflow, not blended together.
-
-### The two datasets we have
-
-| Dataset | What is in it now | Where it lives | How we use it |
-| --- | --- | --- | --- |
-| Our recorded sample dataset | 75 short clips: 15 each for `hello`, `help`, `no`, `thank_you`, and `yes`. The 75 processed landmark files are present too. | Videos: `data/raw_videos/`; landmarks: `data/processed/` | Small development dataset. Since these recordings currently have no saved signer/session provenance manifest, use a clip-level split for a basic test; it cannot measure how well the model works for a new signer. |
-| INCLUDE-50 | 943 indexed clips in 50 labels. All 943 have been converted to landmark sequences. Its official split is preserved: 675 train, 77 validation, 191 test. | Download/index: `data/include50/`; landmarks: `data/include50/processed/`; split records: `data/include50/processed_manifest.json` | Larger dataset for training and held-out evaluation with INCLUDE-50’s official split. It is processed separately from our recordings. |
-
-These counts were checked against the local files and manifests on **November 3, 2026**. The 75 processed local sample sequences are in the repository. Raw recordings, the INCLUDE-50 archive, its processed sequences, and trained model checkpoints are local/ignored files; a fresh clone needs those files supplied separately to run the API or repeat training.
-
-### How a video becomes a model input
-
-```text
-Labeled video
-     │
-     ▼
-Read video frames
-     │
-     ▼
-MediaPipe Holistic finds body pose + left hand + right hand
-     │
-     ▼
-258 numbers per frame ── saved as one .npy sequence per video
-     │
-     ▼
-Validate and resample each clip to 90 frames for training
-     │
-     ├── training clips: augment slightly, then learn
-     ├── validation clips: select the best training checkpoint
-     └── test clips: final held-out evaluation
-     │
-     ▼
-ST-GCN + Transformer learns to predict one sign label
-```
-
-Each frame has 258 values: 33 pose landmarks (x, y, z, visibility) plus 21 left-hand and 21 right-hand landmarks (x, y, z). That is 75 body/hand points in total. A `.npy` file keeps all frames for one clip; the loader checks its shape and values, then resamples the clip to 90 frames so clips of different lengths fit the model. Augmentation is applied to training data only, not validation or test data.
-
-### How data moves through the running website
-
-```text
-Camera button or uploaded video in React
-        │  video file + selected model profile
-        ▼
-FastAPI POST /api/v1/predict-video
-        │  OpenCV reads frames; MediaPipe extracts 258 values per frame
-        ▼
-Landmark sequence → selected checkpoint → top label and alternatives
+Camera capture or uploaded video
         │
         ▼
-JSON response → React displays gloss and model score
+React frontend ── video file ──> FastAPI
+                                  │
+                                  ├─ OpenCV reads frames
+                                  ├─ MediaPipe extracts pose + hand landmarks
+                                  ├─ resample sequence to the checkpoint length
+                                  ├─ ST-GCN encodes connected joints and movement
+                                  ├─ Transformer models longer temporal relationships
+                                  └─ classifier returns one sign label
+        ▲
+        └── gloss + confidence + English display word
+                │
+                └── browser speech synthesis (when the user presses Speak)
 ```
 
-The camera and file-upload controls use the same video endpoint but send different model profiles: `custom` for the camera and `include50` for an uploaded file. The API extracts landmarks at prediction time; it does not train from a video sent by the website. It stores the upload temporarily for decoding and removes that temporary file after processing. Training is a separate offline process that reads processed `.npy` sequences and writes checkpoint and metrics files.
+### Text or dictation to a gloss preview
 
-### How we train with both datasets
+text
+Typed text ─┐
+            ├─> browser dictation/text -> FastAPI vocabulary lookup -> gloss chips
+Voice input ┘                                                     └-> idle 3D avatar
 
-**Each checkpoint is trained on one dataset at a time.** The API can load both checkpoints together and the website routes each type of input to the appropriate model, but the training sets and label vocabularies are not automatically combined. A true combined model would require a deliberately unified label map and a new split/provenance plan.
 
-Train on our 75 locally recorded clips with a simple clip-level split:
+The browser's voice recognition only fills the text field; the user still presses **Prepare signs**. The API matches known words and phrases, lists unmatched words, and returns an empty `motions` list. There is no sentence-aware translation model or avatar motion playback.
 
-```powershell
-.\.venv\Scripts\python.exe -m src.training.train --data-dir data/processed --split-by clip --checkpoint models/stgcn_transformer.pt
-```
+### What one model input contains
 
-Train on INCLUDE-50 with its official train/validation/test assignments:
+MediaPipe landmarks are stored as a sequence with shape `[frames, 258]`:
 
-```powershell
-.\.venv\Scripts\python.exe -m src.training.train --data-dir data/include50/processed --processed-manifest data/include50/processed_manifest.json --split-by official --checkpoint models/include50_stgcn_transformer.pt
-```
+- 33 pose landmarks × 4 values (`x`, `y`, `z`, visibility) = 132 values.
+- 21 left-hand landmarks × 3 values = 63 values.
+- 21 right-hand landmarks × 3 values = 63 values.
+- Total: 258 values per frame and 75 body/hand joints.
 
-The graph model is the default. Training uses the training partition to learn, checks validation performance to keep the best checkpoint, and reports final metrics on the held-out test partition. Checkpoints and metrics are saved under `models/`; the INCLUDE-50 test split must not be used to tune the model.
+The loader validates each sequence and resamples it to 90 frames by default. The graph representation adds a presence value for each hand joint, then uses the pose and finger connections to aggregate neighboring joints. Training-only augmentation can apply small geometric changes, landmark noise, frame drops, and temporal warping. The graph encoder includes temporal convolutions; a Transformer then models relationships across the sequence.
 
-**Current status:** all 943 INCLUDE-50 clips have processed files and official split entries. Training completed with the best validation checkpoint at epoch 60. Its held-out test report shows **89.5% accuracy and 85.8% macro F1 on 191 clips**. This measures the official INCLUDE-50 test split; it does not establish accuracy on our local signer or live camera recordings.
+## The two datasets and models
 
-### How a user will use the system
+The datasets are **not merged**. Each checkpoint has its own labels and is selected for a different workflow.
 
-```text
-User makes a sign in front of a camera
-     ▼
-Camera frames → MediaPipe landmarks → trained classifier → predicted sign label
-     ▼
-Later planned stages: gloss/text → English translation → speech
-```
+| Workflow | Training data | Labels | Checkpoint expected by the API |
+| --- | --- | ---: | --- |
+| Live camera | Local recorded dataset | 5: `hello`, `help`, `no`, `thank_you`, `yes` | `models/stgcn_transformer.pt` |
+| Uploaded video (default) | Local recorded dataset | 5 | `models/stgcn_transformer.pt` |
+| Uploaded video (optional) | INCLUDE-50 | 50 | `models/include50_stgcn_transformer.pt` |
 
-The standalone Python webcam demo runs the camera and classifier directly. The React website records a short camera clip and sends it to FastAPI using the custom model; a video selected from disk is sent using INCLUDE-50. The speech-to-sign endpoint explicitly reports that the feature is not implemented yet. Full sentence translation, a connected speech-to-text → gloss → avatar pipeline, and generated speech from recognized signs are future stages.
+The API loads both checkpoints when it starts. Therefore, both checkpoint files must be available unless the checkpoint configuration is changed. Each model can only predict a label from its own vocabulary.
 
-## Project status and limitations
+The local processed data currently contains 75 sequences (15 examples for each of the five labels). INCLUDE-50's local processed set has 943 indexed sequences: 675 train, 77 validation, and 191 test, using its recorded official split. These datasets, source videos, manifests, and model checkpoints are local machine assets; most are ignored by Git. A new clone does not necessarily contain them.
 
-- Implemented: video collection tools, MediaPipe landmark extraction, preprocessing, data validation/resampling, training-only augmentation, a frame-wise baseline, the ST-GCN + Transformer classifier, evaluation metrics, a standalone webcam demo, FastAPI health/model/video endpoints, a custom-model WebSocket, and React integration with separate live-camera and uploaded-video model routing.
-- Not yet implemented: continuous gloss recognition, gloss-to-English NLP, speech-to-text service, text-to-speech integration, motion generation, and Three.js avatar. The speech-to-sign API returns HTTP 501 until those stages are built.
-- The checked-in sample data has 15 clips for each of five classes (75 clips total), no `no_sign` class, and no recorded multi-session provenance. It is suitable for development tests, not for claiming general-purpose performance.
-- The existing `models/isolated_sign_classifier.metrics.json` report is from the earlier baseline: 66.7% accuracy and 0.651 macro F1 on 15 test samples. It is **not** a result for the ST-GCN model. The INCLUDE-50 ST-GCN report is separate and its score applies only to the official INCLUDE-50 test split.
-- The custom five-sign checkpoint (`models/stgcn_transformer.pt`) has **80% accuracy and 79.8% macro F1 on 15 held-out clips**. This is a small clip-level test, not a signer-held-out test, and it does not guarantee performance on unseen signers.
-- The INCLUDE-50 checkpoint (`models/include50_stgcn_transformer.pt`) has **89.5% accuracy and 85.8% macro F1 on its official 191-clip test split**. This score is not a measure of how the model performs on our own recordings.
-- Training supports clip-, session-, and signer-disjoint splits. The current checked-in data has no provenance manifest, so only the clip split can currently be used with it. For new documented recordings, prefer a session- or signer-based split; every class must appear in at least three groups.
-- Model checkpoints, raw videos, and collection metadata are ignored by Git. A fresh clone may not include local datasets or trained models.
+### Existing evaluation results
 
-## Repository map: what each part is for
+| Model | Reported evaluation | Important caveat |
+| --- | --- | --- |
+| Local five-sign ST-GCN + Transformer | 80% accuracy and 79.8% macro-F1 on 15 held-out clips | Small clip-level test. It is not signer-independent and does not establish performance on unseen people. |
+| INCLUDE-50 ST-GCN + Transformer | 89.5% accuracy and 85.8% macro-F1 on its official 191-clip test split | Different dataset, vocabulary, and evaluation split from the local model. |
+| Earlier frame-wise baseline | A saved report records 66.7% accuracy and 0.651 macro-F1 on 15 test clips | Older result; it is not the graph model result. Compare models only when they use the same data and split. |
+
+These are project-specific reported measurements, not directly comparable scores. They do not prove that the system is more accurate than another research project.
+
+## Research background and honest comparison
+
+The design uses established ideas rather than claiming a new recognition algorithm:
+
+1. **ST-GCN:** Yan, Xiong, and Lin introduced spatial-temporal graph convolution for skeleton-based action recognition. This project applies the general idea of representing a body skeleton as connected joints and modeling both spatial and temporal structure to MediaPipe pose/hand landmarks. It is a project implementation, not a reproduction of their full experiments. [Paper: Spatial Temporal Graph Convolutional Networks for Skeleton-Based Action Recognition (AAAI 2018)](https://arxiv.org/abs/1801.07455).
+2. **Transformer:** The temporal encoder follows the attention-based sequence-modeling approach introduced by Vaswani et al. [Paper: Attention Is All You Need (NeurIPS 2017)](https://arxiv.org/abs/1706.03762).
+3. **Sign-language recognition context:** Published work evaluates different datasets, signing tasks, label vocabularies, and metrics. The review by Adaloglou et al. is useful background on those differences. [A Comprehensive Study on Deep Learning-Based Methods for Sign Language Recognition, IEEE Transactions on Multimedia 24 (2022), 1750–1762](https://doi.org/10.1109/TMM.2021.3070438).
+4. **Landmark extraction:** MediaPipe provides the pose/hand landmark tracking used by this project; it supplies features, not sign meanings. [MediaPipe Holistic documentation](https://developers.google.com/edge/mediapipe/solutions/vision/holistic_landmarker).
+
+### What this project contributes as an engineering prototype
+
+- A complete path from labeled videos to landmarks, model training/evaluation, API inference, and a browser UI.
+- A graph-based pose/hand classifier combined with a temporal Transformer.
+- Separate checkpoint routing for a small locally recorded vocabulary and INCLUDE-50.
+- A browser speech output for the recognized single word and an explicitly limited text-to-gloss preview.
+
+These are useful integration and project contributions, but **they are not evidence of research superiority or algorithmic novelty**. The reported scores use different datasets and splits, and the local test set is very small. A fair comparison would require the same dataset, identical train/validation/test protocol, comparable preprocessing, documented baseline implementations, repeated seeds, per-class results, and signer-disjoint evaluation. A research paper should also report limitations and avoid generalizing beyond the tested signers and labels.
+
+## Project layout and file-by-file guide
+
+### Root and data
 
 | Path | Purpose |
 | --- | --- |
-| `README.md` | Project explanation, data flow, setup commands, status, limitations, and next steps. |
-| `requirements.txt` | Python packages needed for landmark extraction, model training, and the API. |
-| `.gitignore` | Keeps local environments, raw/private datasets, generated reports, and model checkpoints out of Git. |
-| `data/raw_videos/<label>/` | Local source videos organized in folders named for their sign labels. |
-| `data/processed/<label>/*.npy` | Processed local examples: one 258-feature landmark sequence per video. |
-| `data/metadata/` | Collection and processed-data manifests; needed for provenance-aware audit and grouped splits. |
-| `data/include50/` | Local INCLUDE-50 index, source videos, processed sequences, and official-split manifest. |
-| `models/*.pt` | Locally saved trained checkpoints. The API needs both the custom and INCLUDE-50 checkpoint files. |
-| `models/*.metrics.json` | Evaluation reports saved alongside trained checkpoints. |
-| `src/data/record_videos.py` | Records labeled videos and documents collection conditions. |
-| `src/data/landmarks.py` | Extracts pose and hand landmarks with MediaPipe. |
-| `src/data/preprocess.py` | Converts our raw local videos into landmark `.npy` sequences and records provenance. |
-| `src/data/import_include50.py` | Converts INCLUDE-50 source videos and preserves their official split assignments. |
-| `src/data/loader.py` | Validates, loads, resamples, and splits landmark sequences for training/evaluation. |
-| `src/data/augment.py` | Applies geometric and timing variations to training examples only. |
-| `src/data/audit.py` | Checks sample counts, `no_sign`, provenance, sessions, and data variation. |
-| `src/models/graph.py` | Empty placeholder; graph construction currently lives in `src/models/stgcn.py`. |
-| `src/models/stgcn.py` | Implements spatial-temporal graph-convolution blocks and the frame-wise baseline encoder. |
-| `src/models/transformer.py` | Models temporal relationships between frames. |
-| `src/models/hybrid.py` | Combines encoders, Transformer, pooling, and classifier heads. |
-| `src/models/baseline.py` | Keeps the original non-graph classifier for comparison. |
-| `src/training/train.py` | Trains a selected model, chooses the best validation checkpoint, and reports test metrics. |
-| `src/training/evaluate.py` | Calculates accuracy, macro F1, per-class scores, and confusion matrices. |
-| `src/inference/predict.py` | Runs standalone real-time webcam recognition from one checkpoint. |
-| `src/utils/checkpoints.py` | Saves and validates model checkpoint files. |
-| `src/utils/io.py` | Shared JSON and filesystem helpers. |
-| `api/main.py` | FastAPI startup, health/model routes, video prediction, and WebSocket endpoint. |
-| `api/services/recognition.py` | Loads both checkpoints, extracts input-video landmarks, and runs predictions. |
-| `api/services/nlp.py` | Empty placeholder; gloss-to-English NLP is not implemented yet. |
-| `frontend/web/src/App.tsx` | React screens and user actions for camera, uploaded video, predictions, and speech-to-sign UI. |
-| `frontend/web/src/api.ts` | Typed REST/WebSocket client and model-selection request fields. |
-| `frontend/web/src/styles.css` | Website layout, components, and responsive styling. |
-| `frontend/web/src/main.tsx` | React browser entry point. |
-| `frontend/web/src/vite-env.d.ts` | TypeScript declarations for Vite environment variables. |
-| `frontend/web/index.html`, `vite.config.ts`, `tsconfig*.json` | Frontend HTML, development/build configuration, and TypeScript settings. |
-| `frontend/web/package.json`, `package-lock.json` | JavaScript dependencies and reproducible package versions. |
-| `frontend/web/.env.example` | Example frontend setting for the API address. |
-| `frontend/avatar/` | Reserved for future 3D avatar assets and motion files. |
-| `tests/test_data_pipeline.py` | Tests sequence loading, validation, provenance, and data splitting. |
-| `tests/test_augment.py` | Tests training-data augmentation. |
-| `tests/test_model.py` | Tests model shapes, graph behavior, and classifiers. |
-| `tests/test_recognition.py` | Tests model selection and no-hand prediction handling. |
-| `notebooks/01_data_exploration.ipynb` | Early dataset exploration. |
-| `notebooks/02_landmark_extraction.ipynb` | Landmark-extraction experiments. |
-| `notebooks/03_baseline.ipynb` | Early baseline experiments. |
-| `notebooks/04_model_training.ipynb` | Model-training experiments. |
+| `README.md` | This guide: project status, data/model flow, setup, research context, limitations, and file directory. |
+| `requirements.txt` | Python dependencies for MediaPipe, OpenCV, PyTorch, FastAPI, and notebook tools. |
+| `.gitignore` | Excludes virtual environments, raw/private datasets, metadata, model checkpoints, generated frontend files, and notebook checkpoints. |
+| `data/processed/<label>/<sample>.npy` | Tracked local examples. Each file stores one variable-length `[frames, 258]` landmark sequence for a sign label. |
+| `data/raw_videos/<label>/` | Local source recordings used to create the custom processed samples; ignored by Git. |
+| `data/metadata/` | Local collection and preprocessing manifests; used for auditing and signer/session-aware splits; ignored by Git. |
+| `data/include50/` | Local INCLUDE-50 index, videos, processed sequences, and official-split manifest; ignored by Git. |
+| `models/` | Local checkpoints and training metric reports expected by the API; model files are not tracked. |
 
-## Setup
+### Backend API
 
-Use Python 3.10 or later. Run these commands from the repository root in PowerShell:
+| File | Purpose |
+| --- | --- |
+| `api/main.py` | Creates the FastAPI app, loads both models on startup, configures CORS, and defines health, model-info, video prediction, text-to-gloss, and WebSocket routes. |
+| `api/services/recognition.py` | Loads a recognition checkpoint, extracts landmarks from uploaded/live frames, validates media limits, predicts labels, and selects configured model paths/devices. |
+| `api/services/nlp.py` | Formats one gloss as an English word and maps a limited set of text words/phrases to supported glosses. It is a lookup helper, not a full NLP translator. |
+| `api/__init__.py` | Marks `api` as a Python package. |
+| `api/services/__init__.py` | Marks API services as a Python package. |
+
+### Data preparation
+
+| File | Purpose |
+| --- | --- |
+| `src/data/record_videos.py` | Captures labeled camera clips and records signer/session and collection-condition metadata in a manifest. |
+| `src/data/landmarks.py` | Uses MediaPipe Holistic to extract the 258 pose/hand values per frame and optionally draw landmarks. |
+| `src/data/preprocess.py` | Converts locally recorded videos into atomic `.npy` landmark sequences and a provenance manifest. |
+| `src/data/import_include50.py` | Validates the INCLUDE-50 index/video paths, extracts landmark sequences, and preserves official split labels. |
+| `src/data/loader.py` | Validates and loads landmark sequences, resamples time, creates clip/group/official splits, and supports transformed datasets. |
+| `src/data/augment.py` | Applies optional landmark-space geometry and temporal augmentation to training sequences only. |
+| `src/data/audit.py` | Checks local dataset size, provenance, no-sign class, session count, and observed collection-condition diversity. |
+
+### Models, training, and inference
+
+| File | Purpose |
+| --- | --- |
+| `src/models/stgcn.py` | Builds the 75-node pose/hand graph, converts flat landmarks to graph tensors, and implements graph plus temporal convolution blocks. |
+| `src/models/transformer.py` | Implements positional encoding and the temporal Transformer encoder. |
+| `src/models/hybrid.py` | Implements both classifiers, attention pooling, and the model factory. `STGCNTransformerClassifier` is the default graph model; `IsolatedSignClassifier` is the frame-wise baseline. |
+| `src/models/graph.py` | Empty placeholder; it currently contains no implementation and is not imported by the active pipeline. |
+| `src/models/baseline.py` | Empty placeholder; the actual frame-wise baseline is implemented in `src/models/hybrid.py`. |
+| `src/training/train.py` | Seeds training, creates data splits/loaders, trains a selected classifier, saves the best validation checkpoint, and reports held-out test metrics. |
+| `src/training/evaluate.py` | Computes loss, accuracy, macro-F1, per-class precision/recall/F1, and confusion matrix. |
+| `src/inference/predict.py` | Runs standalone webcam inference with probability smoothing and a confidence threshold. |
+| `src/utils/checkpoints.py` | Saves checkpoints atomically and validates checkpoint schema and architecture metadata when loading. |
+| `src/utils/io.py` | Provides atomic JSON save and JSON-object loading helpers for manifests/reports. |
+| `src/utils/__init__.py` | Marks shared utilities as a Python package. |
+
+### Frontend
+
+| File | Purpose |
+| --- | --- |
+| `frontend/web/index.html` | Browser HTML shell and application title/metadata. |
+| `frontend/web/package.json` | Frontend scripts and React, Three.js, TypeScript, and Vite dependencies. |
+| `frontend/web/package-lock.json` | Exact npm dependency resolution for repeatable installs. |
+| `frontend/web/.env.example` | Example API base URL setting. |
+| `frontend/web/vite.config.ts` | Configures Vite and its React plugin. |
+| `frontend/web/tsconfig.json` | Strict TypeScript compiler settings for the frontend source. |
+| `frontend/web/tsconfig.node.json` | TypeScript project settings for Vite's Node-side configuration. |
+| `frontend/web/src/main.tsx` | React entry point; mounts the app and imports styles. |
+| `frontend/web/src/App.tsx` | Main UI and workflows: camera recording, uploaded-video prediction, dictation, text-to-gloss requests, result display, and browser speech synthesis. |
+| `frontend/web/src/api.ts` | Typed REST/WebSocket helpers and request/response shapes for the backend. |
+| `frontend/web/src/AvatarViewer.tsx` | Procedural Three.js avatar viewer with idle movement, pointer rotation, and reset controls; contains no sign animations. |
+| `frontend/web/src/styles.css` | Layout, responsive styling, colors, and component/3D-viewer styles. |
+| `frontend/web/src/vite-env.d.ts` | Vite client type declarations for TypeScript. |
+
+### Tests and notebooks
+
+| Path | Purpose/status |
+| --- | --- |
+| `tests/test_data_pipeline.py` | Tests sequence resampling, dataset loading, split behavior, provenance, and INCLUDE-50 index validation. |
+| `tests/test_augment.py` | Tests deterministic augmentation, output shape/type, and preservation of missing hand landmarks. |
+| `tests/test_model.py` | Tests graph topology/conversion and forward/backward behavior of both classifiers. |
+| `tests/test_recognition.py` | Tests gloss formatting, text-to-gloss lookup, model configuration, and recognition edge cases. |
+| `notebooks/01_data_exploration.ipynb` | Empty file; no runnable exploration notebook is currently included. |
+| `notebooks/02_landmark_extraction.ipynb` | Empty file; no runnable extraction notebook is currently included. |
+| `notebooks/03_baseline.ipynb` | Empty file; no runnable baseline notebook is currently included. |
+| `notebooks/04_model_training.ipynb` | Empty file; no runnable training notebook is currently included. |
+
+The active data/training pipeline is implemented in Python modules under `src/`; the notebooks are not part of the working pipeline.
+
+## Setup and run
+
+### 1. Install Python dependencies
+
+Run from the repository root in PowerShell:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-## Run the backend API
+### 2. Start the API
 
-The API loads both ST-GCN + Transformer checkpoints at startup, so both files must exist. Live camera captures use the model trained on this project's five locally recorded signs (`hello`, `help`, `no`, `thank_you`, `yes`); uploaded video clips use the separate 50-label INCLUDE-50 model. From the repository root, start it after installing the Python requirements:
+The default API configuration expects both trained checkpoints under `models/`. If they are not present, the API reports a startup error; a fresh clone must be supplied with the local checkpoint files or have them trained first.
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-The default checkpoints are `models/stgcn_transformer.pt` and `models/include50_stgcn_transformer.pt`. To change them or select another compute device, set these before launching:
+Default checkpoint paths:
+
+- `models/stgcn_transformer.pt` for the custom five-sign model.
+- `models/include50_stgcn_transformer.pt` for INCLUDE-50.
+
+Optional PowerShell configuration:
 
 ```powershell
 $env:SIGN_CUSTOM_MODEL_CHECKPOINT = "models/stgcn_transformer.pt"
@@ -247,142 +222,114 @@ $env:SIGN_INCLUDE50_MODEL_CHECKPOINT = "models/include50_stgcn_transformer.pt"
 $env:SIGN_MODEL_DEVICE = "auto" # or "cpu" / "cuda"
 ```
 
-The older `SIGN_MODEL_CHECKPOINT` setting remains supported as an override for both profiles when the profile-specific settings are unset.
+The API accepts the older `SIGN_MODEL_CHECKPOINT` setting as a shared fallback when profile-specific settings are unset. The default frontend origins include Vite's usual `http://localhost:5173` and `http://127.0.0.1:5173` plus fallback port `5174`. If Vite selects another port, set `SIGN_FRONTEND_ORIGINS` to a comma-separated origin list before starting the API. Interactive API documentation is at `http://127.0.0.1:8000/docs`.
 
-The frontend's default API address is `http://127.0.0.1:8000`. The API allows the local Vite origins `http://localhost:5173` and `http://127.0.0.1:5173`; set `SIGN_FRONTEND_ORIGINS` to a comma-separated origin list if your frontend runs elsewhere. Interactive API documentation is available at `http://127.0.0.1:8000/docs`.
+### 3. Start the website
 
-## Run the web frontend
-
-The React + TypeScript frontend lives in `frontend\web`. Keep the API running in its terminal, then open a second PowerShell terminal at the repository root:
+Open a second PowerShell terminal:
 
 ```powershell
 Set-Location frontend\web
-npm install
+npm ci
 npm run dev
 ```
 
-Open the local URL printed by Vite. To point the browser at a backend hosted somewhere other than `http://127.0.0.1:8000`, copy `.env.example` to `.env.local` in `frontend/web`, set `VITE_API_BASE_URL`, and restart Vite. Build and type-check the frontend from its directory with:
+Open the localhost URL printed by Vite. To use a different backend, copy `.env.example` to `.env.local`, set `VITE_API_BASE_URL`, and restart Vite. Camera access requires browser permission and a secure context such as localhost or HTTPS.
+
+Build and type-check the frontend with:
 
 ```powershell
-Set-Location frontend\web
 npm run build
 ```
 
-The UI includes sign-to-speech and speech-to-sign screens, a backend connection banner, and a retry action. In sign-to-speech, users can start the camera and click **Capture sign** to record a three-second clip, or select a local video and click **Analyze clip**. The first path selects the custom model; the uploaded-video path selects INCLUDE-50. The browser asks for camera permission; webcam use requires localhost or HTTPS. In speech-to-sign, users can type a sentence or try browser dictation with English (India), English (US), or Hindi selected. Dictation depends on browser Web Speech API support; neither path currently produces a sign translation because that backend stage is not implemented. The avatar view is an illustrative placeholder.
+## API routes
 
-### API endpoints
+| Method and route | What it does |
+| --- | --- |
+| `GET /api/v1/health` | Confirms the recognition models are available. |
+| `GET /api/v1/model` | Reports model profiles, architectures, labels, and available features. |
+| `POST /api/v1/predict-video` | Accepts MP4, MOV, or WebM, up to 25 MB and 500 frames. Use multipart fields `file`, `model` (`custom` or `include50`, defaults to `custom`), and optional `mirror_horizontal` (`true` for horizontally mirrored selfie recordings). |
+| `POST /api/v1/speech-to-sign` | Accepts JSON text and returns known glosses, unmatched words, and an empty motion list. |
+| `WS /ws/recognize` | Optional WebSocket client path for custom-model live recognition. Send `{"type":"capture"}` and binary JPEG frames; the API processes 20 frames. The React camera currently uses the REST video endpoint instead. |
 
-Implemented FastAPI REST endpoints:
+The video endpoint extracts landmarks on the backend, selects the requested checkpoint, and responds with a gloss, confidence score, and top alternatives. The uploaded-video selector defaults to the custom model because the local webcam clips and five-sign vocabulary match that model; choose INCLUDE-50 only for clips from that dataset/domain. Some selfie-camera recordings are horizontally mirrored. If the clip visibly appears mirrored and the prediction is wrong, enable the mirror option to flip frames before landmark extraction. Confidence is a model score, not a guarantee of correctness. A no-hand input is reported rather than automatically assigned a sign.
 
-| Method and path | Request | Example response / behavior |
-| --- | --- | --- |
-| `GET /api/v1/health` | None | `{"status":"ok"}` if model startup succeeded |
-| `GET /api/v1/model` | None | Both model profiles, architectures, devices, label lists, and feature availability |
-| `POST /api/v1/predict-video` | `multipart/form-data`, file field `file`, `model` field `custom` or `include50`; MP4/MOV/WebM, max 25 MB and 500 frames | Prediction, top alternatives, and the selected model profile |
-| `POST /api/v1/speech-to-sign` | JSON `{"text":"Hello"}` | HTTP 501 with a message that speech-to-sign is not implemented yet |
+## Collect, prepare, train, and test
 
-For camera recognition, the frontend previews the camera and records a three-second clip when **Capture sign** is clicked, then sends the original video with `model=custom`. This preserves the camera's captured frame rate and uses the five-label model. Uploaded recorded clips are sent with `model=include50`, selecting INCLUDE-50's 50-label vocabulary. The API extracts MediaPipe landmarks and returns the gloss, selected model, model score, and top alternatives; analysis may take a few seconds. To try another sign, click **Capture sign** again. The API reports when no hand landmarks were found rather than forcing a label. The React camera currently uses REST, not the WebSocket. Other clients can use `/ws/recognize`, which accepts binary JPEG frames and a `{"type":"capture"}` command, then classifies the next 20 frames using the custom five-label model. Both models recognize isolated labels, not continuous sentence-level signing. Each model chooses among its own labels when landmarks are present; confidence is not a guarantee that a prediction is correct.
+### Custom videos
 
-## Collect and prepare data
-
-Record a documented batch of ten videos per class in one session. The recorder's default class list includes `no_sign`.
+The recording tool defaults to five labels plus `no_sign`. Example: record ten examples per class for one documented signer/session:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.data.record_videos --samples-this-session 10 --signer-id signer_01 --session-id session_01 --lighting bright_indoor --distance medium --clothing casual --speed normal --camera-angle frontal
 ```
 
-Repeat across different sessions and, where possible, different signers and conditions. Include neutral posture and non-target movement in `no_sign` recordings.
-
-Extract landmarks and audit the result:
+Extract landmarks and audit the dataset:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.data.preprocess
 .\.venv\Scripts\python.exe -m src.data.audit --strict
 ```
 
-The strict audit requires at least 40 samples per class, a `no_sign` class, at least five sessions per class, variation in collection conditions, and provenance records. The current sample dataset does not pass this audit. Collect data before relying on model results.
+The strict audit requires at least 40 samples per class, a `no_sign` class, five sessions per class, varied collection conditions, and complete provenance. The currently checked-in five-class dataset does not satisfy this research-ready collection requirement.
 
-Each processed `.npy` sequence has shape `[frames, 258]`, with finite values and at least one frame. Training resamples each sequence to the configured length.
+### INCLUDE-50 videos
 
-## Import INCLUDE-50
-
-The INCLUDE-50 files are kept under the ignored `data/include50/` directory. The downloaded CSV and extracted video paths have been checked: the index describes 943 clips across 50 labels with official train/validation/test assignments (675/77/191), and every indexed video was present. The videos must be converted to this project's 258-value MediaPipe format before training; importing is resumable and writes into a separate `data/include50/processed/` directory.
-
-Run the importer from the repository root:
+With the dataset and index CSV placed under `data/include50/`, import videos and retain the source split:
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.data.import_include50
 ```
 
-By default, it reads `data/include50/include-50_dataset.csv` and videos from `data/include50/include-50_dataset/content/include_50_dataset`, saves landmark sequences to `data/include50/processed`, and records each original label and official split in `data/include50/processed_manifest.json`. It does not modify the existing `data/processed` samples. A short import can be tested with `--limit 3`, but do not train on a partial import.
+The importer writes to `data/include50/processed/` and `data/include50/processed_manifest.json`. A smoke test can use `--limit 3`; a partial import must not be used for final training or evaluation.
 
-Once all videos are imported, train using the dataset's provided split and a separate model checkpoint:
+### Train the models
 
-```powershell
-.\.venv\Scripts\python.exe -m src.training.train --data-dir data/include50/processed --processed-manifest data/include50/processed_manifest.json --split-by official --checkpoint models/include50_stgcn_transformer.pt
-```
-
-This converts the dataset to the current model input. It does not make the 50-sign dataset directly equivalent to the five locally recorded signs: the label vocabulary differs, and the official test split omits two classes. Keep the official split intact when reporting INCLUDE-50 results.
-
-## Train and evaluate
-
-For the current 75-example local dataset, use a clip-level split because it has no signer/session manifest:
+Local five-sign model (the current local samples lack provenance, so use a clip-level split):
 
 ```powershell
 .\.venv\Scripts\python.exe -m src.training.train --data-dir data/processed --split-by clip --checkpoint models/stgcn_transformer.pt
 ```
 
-Default graph-model checkpoint: `models/stgcn_transformer.pt`. Its report is saved beside it as `models/stgcn_transformer.metrics.json`.
-
-Session-based splitting is the default and uses `data/metadata/processed_manifest.json` to keep every session entirely within one split. Use `--split-by signer` to keep signer identities disjoint instead. Each class must have examples across at least three distinct selected groups. The currently available 75-clip sample dataset has no provenance manifest, so specify `--split-by clip` for that dataset; its result is not a signer/session generalization estimate.
-
-To train the original frame-wise baseline for comparison:
+INCLUDE-50 model (use the source dataset's official split):
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.training.train --model-type baseline
+.\.venv\Scripts\python.exe -m src.training.train --data-dir data/include50/processed --processed-manifest data/include50/processed_manifest.json --split-by official --checkpoint models/include50_stgcn_transformer.pt
 ```
 
-The baseline checkpoint is `models/isolated_sign_classifier.pt`. You can override either output path with `--checkpoint`. Compare test macro F1, per-class results, and confusion matrices using the same data split; do not compare training accuracy.
+Training defaults to `stgcn_transformer`; pass `--model-type baseline` to train the frame-wise baseline. The trainer saves the best validation checkpoint and a `.metrics.json` report beside it. The test split should be reserved for final evaluation rather than model tuning. For future custom recordings, prefer `--split-by signer` or `--split-by session`; these require enough documented groups for every class.
 
-## Run webcam recognition
-
-After training the graph model:
+Standalone Python webcam demo:
 
 ```powershell
-.\.venv\Scripts\python.exe -m src.inference.predict --threshold 0.75
+.\.venv\Scripts\python.exe -m src.inference.predict --checkpoint models/stgcn_transformer.pt
 ```
 
-The default checkpoint is `models/stgcn_transformer.pt`. To use another checkpoint:
+Press `q` to exit.
 
-```powershell
-.\.venv\Scripts\python.exe -m src.inference.predict --checkpoint models/isolated_sign_classifier.pt
-```
-
-Press `q` to close the webcam window. A trained `no_sign` class is needed for the model to learn a background/no-target category; the confidence threshold alone is not a substitute for that data.
-
-## Run tests
+Run the Python tests from the repository root:
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-## Next development stages
+## Limitations and next research steps
 
-1. Collect more local signers/sessions, include a `no_sign` class, and preserve recording provenance.
-2. Evaluate the INCLUDE-50 and local models with signer-held-out data before claiming performance on new users.
-3. Collect continuous signing clips with time-aligned glosses before developing sentence-level recognition.
-4. Build and evaluate speech-to-text, gloss-to-English, and text-to-speech services.
-5. Create or source licensed sign-motion assets, connect glosses to motion, and implement the Three.js avatar.
-6. Add end-to-end tests, reconnect/error handling, and deployment configuration for the API and frontend.
+1. Record more custom examples from multiple signers, sessions, lighting conditions, distances, and camera angles; include a well-defined `no_sign` class.
+2. Use signer-held-out evaluation for claims about unseen people. Report per-class metrics, confusion matrices, and multiple-run variability.
+3. Compare the ST-GCN + Transformer against the included frame-wise baseline on the **same data, preprocessing, split, and evaluation protocol**.
+4. For continuous translation, collect continuous signing with time-aligned gloss annotations and develop/test a sentence-level recognition and translation model.
+5. Replace the fixed word lookup with an appropriately evaluated language/gloss model; connect licensed, reviewed sign motions to avatar animation before claiming sign generation.
+6. Add broader integration tests and deployment configuration after the model/data workflow is stable.
 
-## Questions your mentor may ask
+## Questions a supervisor may ask
 
-**What does one model input contain?** A video is converted into frames of 258 MediaPipe values: 33 pose landmarks and 21 landmarks for each hand. The loader resamples a clip to 90 frames. The graph model represents those points as 75 connected joints.
+**Is this a proper ST-GCN and Transformer, or simple code?** The active model has a graph over pose/hand landmarks, learnable graph edge weighting, spatial aggregation, temporal graph convolutions, a Transformer encoder, attention pooling, and a classifier head. It is implemented in this repository rather than using an off-the-shelf pretrained sign-language model.
 
-**Why use an ST-GCN and a Transformer?** The graph convolution learns relationships between connected body/hand joints. The Transformer learns how those landmarks change across time. The classifier returns one isolated-sign label.
+**Are both datasets used in one model?** No. They produce separate checkpoints and label spaces; the live camera uses the custom model, and uploaded files default to custom with INCLUDE-50 available as a selectable alternative.
 
-**Are the datasets merged?** No. Each is used to train its own checkpoint. The API can keep both loaded and routes webcam captures to the five-sign model and uploaded videos to INCLUDE-50.
+**Does the reverse direction translate speech into signs?** Not fully. Dictation is a browser feature, and the API only looks up supported words/phrases as gloss labels. There is no grammar-aware translation or signing avatar animation.
 
-**What do the accuracy numbers mean?** The local model scored 80% on 15 held-out clips; INCLUDE-50 scored 89.5% on its official 191-clip test split. Neither result proves performance on unseen signers. A confidence score is not the same as accuracy.
+**Can we say our model is better than published research?** Not from the current results. A defensible comparison requires a shared benchmark and evaluation protocol. Current results are evidence of prototype performance only.
 
-**What is the most important next step?** Record many more examples across signers, sessions, and camera conditions, include `no_sign`, and evaluate with signer-held-out data. Then build and test the sentence, speech, and avatar stages.
+**What is the next most important step?** Expand and document signer-diverse data, then evaluate on signers excluded from training before making real-world accuracy claims.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import {
   getApiBaseUrl,
   getHealth,
@@ -11,8 +11,11 @@ import {
   type VideoPrediction,
 } from "./api";
 
+const AvatarViewer = lazy(() => import("./AvatarViewer"));
+
 type Direction = "sign" | "speech";
 type ApiStatus = "checking" | "online" | "offline";
+type RecognitionModel = "custom" | "include50";
 
 type SpeechRecognitionResult = {
   transcript: string;
@@ -155,6 +158,8 @@ function App() {
   const [latestPrediction, setLatestPrediction] =
     useState<RecognitionMessage | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [uploadModel, setUploadModel] = useState<RecognitionModel>("custom");
+  const [mirrorVideo, setMirrorVideo] = useState(false);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState("");
   const [videoResult, setVideoResult] = useState<VideoPrediction | null>(null);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
@@ -371,7 +376,7 @@ function App() {
     setRecognitionError("");
     setVideoResult(null);
     try {
-      setVideoResult(await predictVideo(videoFile, "include50"));
+      setVideoResult(await predictVideo(videoFile, uploadModel, mirrorVideo));
     } catch (error) {
       setRecognitionError(
         error instanceof Error ? error.message : "Video prediction failed.",
@@ -461,7 +466,13 @@ function App() {
       return;
     }
     window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-IN";
+    utterance.onerror = () => {
+      setRecognitionError("The browser could not play the spoken result.");
+    };
+    setRecognitionError("");
+    window.speechSynthesis.speak(utterance);
   };
 
   const predictionLabel =
@@ -688,6 +699,32 @@ function App() {
                     />
                   </label>
                 </div>
+                <div className="upload-model-row">
+                  <label htmlFor="upload-model">Model for uploaded video</label>
+                  <select
+                    id="upload-model"
+                    value={uploadModel}
+                    onChange={(event) =>
+                      setUploadModel(
+                        event.target.value === "include50" ? "include50" : "custom",
+                      )
+                    }
+                  >
+                    <option value="custom">My signs (5 labels) — recommended</option>
+                    <option value="include50">INCLUDE-50 (50 labels)</option>
+                  </select>
+                  <span>Choose the dataset that matches the sign in your clip.</span>
+                </div>
+                <label className="mirror-video-option">
+                  <input
+                    type="checkbox"
+                    checked={mirrorVideo}
+                    onChange={(event) => setMirrorVideo(event.target.checked)}
+                  />
+                  <span>
+                    Flip horizontally for a mirrored selfie video if the prediction looks wrong.
+                  </span>
+                </label>
                 {videoFile && (
                   <div className="clip-preview">
                     <video src={videoPreviewUrl} controls playsInline aria-label={`Preview of ${videoFile.name}`} />
@@ -713,7 +750,10 @@ function App() {
                 <div className="result-content">
                   <div className="result-label">RECOGNIZED GLOSS</div>
                   {videoResult?.model_name && (
-                    <div className="result-label">{videoResult.model_name}</div>
+                    <div className="result-label">
+                      {videoResult.model_name}
+                      {videoResult.mirror_horizontal ? " · MIRRORED" : ""}
+                    </div>
                   )}
                   <div className={`prediction-word ${predictionLabel === "—" ? "muted" : ""}`}>
                     {videoResult?.recognized === false
@@ -750,8 +790,8 @@ function App() {
                     </div>
                   )}
                   <div className="translation-card">
-                    <div className="translation-title"><span>ENGLISH TEXT</span><span className="coming-label">NLP STAGE</span></div>
-                    <p>{videoResult?.english_text || latestPrediction?.english_text || "English translation will appear when the NLP service is connected."}</p>
+                    <div className="translation-title"><span>ENGLISH WORD</span><span className="coming-label">SINGLE SIGN</span></div>
+                    <p>{videoResult?.english_text || latestPrediction?.english_text || "The recognized sign's English word will appear here."}</p>
                     <button
                       className="speak-button"
                       onClick={() => {
@@ -760,11 +800,11 @@ function App() {
                       }}
                       disabled={!videoResult?.english_text && !latestPrediction?.english_text}
                     >
-                      <Icon name="sound" size={16} /> Speak translation
+                      <Icon name="sound" size={16} /> Speak English word
                     </button>
                   </div>
                 </div>
-                <div className="result-footnote"><span className="info-dot">i</span> Live camera uses your five-sign custom model; uploaded clips use INCLUDE-50. Confidence is a model score, not a guarantee of accuracy.</div>
+                <div className="result-footnote"><span className="info-dot">i</span> Live camera uses your five-sign custom model. Uploaded clips use the model selected above. Confidence is a model score, not a guarantee of accuracy.</div>
               </section>
 
               <section className="panel process-panel">
@@ -777,7 +817,7 @@ function App() {
                     ["01", "Camera", "Video input"],
                     ["02", "MediaPipe", "Body landmarks"],
                     ["03", "ST-GCN + Transformer", "Sign recognition"],
-                    ["04", "Gloss → NLP → Speech", "Translation stages"],
+                    ["04", "English word → speech", "Browser text-to-speech"],
                   ].map(([number, title, caption], index) => (
                     <div className="pipeline-step" key={number}>
                       <span className={`step-number ${index < 3 ? "step-ready" : "step-planned"}`}>{number}</span>
@@ -813,14 +853,14 @@ function App() {
                   <span className="speech-icon"><Icon name="mic" size={20} /></span>
                 </div>
                 <p className="panel-description">
-                  Speak or type a short sentence.{" "}
+                  Type a word or short phrase from the supported sign vocabulary.{" "}
                   {apiStatus === "online"
-                    ? "The recognition API is connected, but speech-to-sign is a planned stage and is not available yet."
-                    : "Speech-to-sign needs the backend and is not available yet. You can still try the example phrases or dictate text."}
+                    ? "Prepare signs maps known words to glosses. Avatar motion is not connected yet."
+                    : "Start the backend to map supported words to glosses."}
                 </p>
                 <div className="example-row">
                   <span>TRY AN EXAMPLE</span>
-                  {["Hello", "Thank you", "How are you?"].map((example) => (
+                  {["Hello", "Thank you", "Good morning"].map((example) => (
                     <button
                       className="example-chip"
                       key={example}
@@ -866,7 +906,7 @@ function App() {
                   <button className={isListening ? "button button-stop" : "button button-outline"} onClick={() => (isListening ? stopSpeechRecognition() : startSpeechRecognition())}>
                     <Icon name="mic" size={17} />                     {isListening ? "Stop listening" : "Use microphone"}
                   </button>
-                  <button className="button button-primary" disabled={isSpeechLoading || apiStatus !== "online" || modelInfo?.features?.speech_to_sign !== true || !speechText.trim()} onClick={() => void handleSpeechToSign()}>
+                  <button className="button button-primary" disabled={isSpeechLoading || apiStatus !== "online" || modelInfo?.features?.text_to_gloss !== true || !speechText.trim()} onClick={() => void handleSpeechToSign()}>
                     {isSpeechLoading ? "Preparing..." : "Prepare signs"} <Icon name="arrow" size={17} />
                   </button>
                 </div>
@@ -874,24 +914,27 @@ function App() {
               </section>
               <section className="panel motion-panel">
                 <div className="panel-heading">
-                  <div><div className="section-kicker">02 / OUTPUT</div><h2>Sign sequence</h2></div>
+                  <div><div className="section-kicker">02 / OUTPUT</div><h2>3D sign avatar</h2></div>
                   <span className="result-spark"><Icon name="spark" size={18} /></span>
                 </div>
-                {speechResult ? (
-                  <div className="motion-result">
-                    <div className="avatar-placeholder"><span className="avatar-orbit orbit-a" /><span className="avatar-orbit orbit-b" /><div className="avatar-figure"><span className="figure-head" /><span className="figure-body" /><span className="figure-arm arm-left" /><span className="figure-arm arm-right" /></div><div className="avatar-label">3D AVATAR VIEW</div></div>
-                    <div className="gloss-heading"><span>GLOSS SEQUENCE</span><span>{speechResult.glosses.length} SIGNS</span></div>
-                    <div className="gloss-list">{speechResult.glosses.map((gloss, index) => <span className="gloss-chip" key={`${gloss}-${index}`}><small>{String(index + 1).padStart(2, "0")}</small>{formatName(gloss)}</span>)}</div>
-                    <p className="motion-note">The avatar area is a preview placeholder until sign motion assets are connected.</p>
-                  </div>
-                ) : (
-                  <div className="motion-empty">
-                    <div className="avatar-placeholder empty-avatar"><span className="avatar-orbit orbit-a" /><span className="avatar-orbit orbit-b" /><div className="avatar-figure"><span className="figure-head" /><span className="figure-body" /><span className="figure-arm arm-left" /><span className="figure-arm arm-right" /></div><div className="avatar-label">AVATAR PREVIEW</div></div>
-                    <strong>Your sign sequence will appear here</strong>
-                    <span>Enter a message and choose “Prepare signs” to begin.</span>
-                  </div>
-                )}
-                {speechResult?.message && <p className="motion-note">{speechResult.message}</p>}
+                <div className="motion-result">
+                  <Suspense fallback={<div className="avatar-loading" role="status">Loading 3D avatar…</div>}>
+                    <AvatarViewer />
+                  </Suspense>
+                  {speechResult ? (
+                    <>
+                      <div className="gloss-heading"><span>MATCHED SIGN GLOSSES</span><span>{speechResult.glosses.length} SIGNS</span></div>
+                      {speechResult.glosses.length > 0 ? (
+                        <div className="gloss-list">{speechResult.glosses.map((gloss, index) => <span className="gloss-chip" key={`${gloss}-${index}`}><small>{String(index + 1).padStart(2, "0")}</small>{formatName(gloss)}</span>)}</div>
+                      ) : (
+                        <p className="motion-note">No supported signs were found in this text.</p>
+                      )}
+                      {speechResult.message && <p className="motion-note" role="status">{speechResult.message}</p>}
+                    </>
+                  ) : (
+                    <p className="motion-note">The avatar is ready to preview. Prepare a supported word to see its matched gloss. Sign-motion playback is not connected yet.</p>
+                  )}
+                </div>
               </section>
               <section className="panel process-panel speech-process">
                 <div className="panel-heading compact-heading">

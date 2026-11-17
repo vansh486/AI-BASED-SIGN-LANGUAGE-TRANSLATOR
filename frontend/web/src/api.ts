@@ -7,7 +7,10 @@ export type ModelInfo = {
     live_sign_recognition?: boolean;
     video_prediction?: boolean;
     speech_to_sign?: boolean;
+    text_to_gloss?: boolean;
     english_translation?: boolean;
+    gloss_to_english?: boolean;
+    text_to_speech?: boolean;
     avatar_motion?: boolean;
   };
   [key: string]: unknown;
@@ -33,6 +36,7 @@ export type VideoPrediction = {
   confidence: number;
   model?: "custom" | "include50";
   model_name?: string;
+  mirror_horizontal?: boolean;
   recognized?: boolean;
   message?: string;
   english_text?: string | null;
@@ -42,6 +46,7 @@ export type VideoPrediction = {
 export type SpeechToSignResult = {
   recognized_text?: string;
   glosses: string[];
+  unmatched_words?: string[];
   motions?: Array<{ gloss: string; animation_id: string }>;
   message?: string;
 };
@@ -91,10 +96,12 @@ export async function getModelInfo(): Promise<ModelInfo> {
 export async function predictVideo(
   file: File,
   model: "custom" | "include50",
+  mirrorHorizontal = false,
 ): Promise<VideoPrediction> {
   const form = new FormData();
   form.append("file", file);
   form.append("model", model);
+  form.append("mirror_horizontal", String(mirrorHorizontal));
   return request("/api/v1/predict-video", { method: "POST", body: form });
 }
 
